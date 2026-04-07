@@ -818,24 +818,24 @@
         const dpw = dMaxX - dMinX, dph = dMaxY - dMinY;
 
         if (dpw > 0 && dph > 0) {
-          // Capture the clone region directly from the current canvas (matches preview exactly)
-          const capturedData = hd.canvasEl.getContext('2d').getImageData(dMinX, dMinY, dpw, dph);
-
           // Convert to natural-resolution patch coords
-          const natX = dMinX / dsx, natY = dMinY / dsy;
-          const natW = dpw / dsx, natH = dph / dsy;
+          const natMinX = Math.round(dMinX / dsx), natMinY = Math.round(dMinY / dsy);
+          const natPW = Math.round(dpw / dsx), natPH = Math.round(dph / dsy);
 
-          // Scale captured display-resolution data to natural resolution
-          const captC = document.createElement('canvas'); captC.width = dpw; captC.height = dph;
-          captC.getContext('2d').putImageData(capturedData, 0, 0);
+          // Render patch from composite (image + strokes only, no text boxes)
           const patchC = document.createElement('canvas');
-          patchC.width = Math.round(natW); patchC.height = Math.round(natH);
-          patchC.getContext('2d').drawImage(captC, 0, 0, dpw, dph, 0, 0, patchC.width, patchC.height);
+          patchC.width = natPW; patchC.height = natPH;
+          const ppctx = patchC.getContext('2d');
+          for (const p of hd.points) {
+            const lx = Math.round(p.natX - natMinX), ly = Math.round(p.natY - natMinY);
+            const ssx = Math.round(p.srcX - sz / 2), ssy = Math.round(p.srcY - sz / 2);
+            ppctx.drawImage(hd.composite, ssx, ssy, sz, sz, lx - sz / 2, ly - sz / 2, sz, sz);
+          }
 
           const dataUrl = patchC.toDataURL('image/png');
           if (!hd.item.strokes) hd.item.strokes = [];
           hd.item.strokes.push({ isPatch: true, patchDataUrl: dataUrl,
-            x: Math.round(natX), y: Math.round(natY), w: patchC.width, h: patchC.height });
+            x: natMinX, y: natMinY, w: natPW, h: natPH });
           const cImg = new Image(); cImg.src = dataUrl;
           patchImageCache.set(dataUrl, cImg);
           cImg.onload = () => redrawSlot(hd.imgEl, hd.canvasEl, hd.item);
