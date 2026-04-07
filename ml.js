@@ -17,7 +17,18 @@ const ML = (() => {
   let detSession = null, ocrEncSession = null, ocrDecSession = null, inpaintSession = null;
   let dictionary = null;
 
-  const M = 'models/';
+  // Use local models/ if available, fall back to HuggingFace CDN for GitHub Pages deployment
+  const HF = 'https://huggingface.co/noobv2ram/lightweight-manga-typeset/resolve/main/';
+
+  // Check if local models exist, otherwise use HuggingFace
+  async function resolveModelPath(filename) {
+    const localPath = 'models/' + filename;
+    try {
+      const resp = await fetch(localPath, { method: 'HEAD' });
+      if (resp.ok) return localPath;
+    } catch (_) {}
+    return HF + filename;
+  }
 
   // ── ONNX fixed input sizes ───────────────────────────────────────────────
   // Detection: traced at 2048x2048 (matches config.py detect_size=2048)
@@ -44,28 +55,34 @@ const ML = (() => {
   async function loadDet(cb) {
     if (detSession) return;
     if (cb) cb('Loading detection model...');
-    detSession = await ort.InferenceSession.create(M + 'manga_det.onnx', { executionProviders: EP });
+    const path = await resolveModelPath('manga_det.onnx');
+    detSession = await ort.InferenceSession.create(path, { executionProviders: EP });
   }
 
   async function loadOCR(cb) {
     if (ocrEncSession && ocrDecSession && dictionary) return;
     if (cb) cb('Loading OCR model...');
     if (!dictionary) {
-      // manga_translator/ocr/model_48px.py line 48
-      const r = await fetch(M + 'alphabet-all-v7.txt');
+      const dictPath = await resolveModelPath('alphabet-all-v7.txt');
+      const r = await fetch(dictPath);
       dictionary = (await r.text()).split('\n');
-      // Python: [s[:-1] for s in fp.readlines()] — strips trailing newline per line
-      // Our split('\n') does the same. Keep empty string at end if file ends with newline.
       if (dictionary[dictionary.length - 1] === '') dictionary.pop();
     }
-    if (!ocrEncSession) ocrEncSession = await ort.InferenceSession.create(M + 'manga_ocr_encoder.onnx', { executionProviders: EP });
-    if (!ocrDecSession) ocrDecSession = await ort.InferenceSession.create(M + 'manga_ocr_decoder.onnx', { executionProviders: EP });
+    if (!ocrEncSession) {
+      const p = await resolveModelPath('manga_ocr_encoder.onnx');
+      ocrEncSession = await ort.InferenceSession.create(p, { executionProviders: EP });
+    }
+    if (!ocrDecSession) {
+      const p = await resolveModelPath('manga_ocr_decoder.onnx');
+      ocrDecSession = await ort.InferenceSession.create(p, { executionProviders: EP });
+    }
   }
 
   async function loadInp(cb) {
     if (inpaintSession) return;
     if (cb) cb('Loading inpainting model...');
-    inpaintSession = await ort.InferenceSession.create(M + 'manga_inpaint.onnx', { executionProviders: EP });
+    const path = await resolveModelPath('manga_inpaint.onnx');
+    inpaintSession = await ort.InferenceSession.create(path, { executionProviders: EP });
   }
 
   // ── Utility ──────────────────────────────────────────────────────────────
