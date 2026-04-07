@@ -20,14 +20,20 @@ const ML = (() => {
   // Use local models/ if available, fall back to HuggingFace CDN for GitHub Pages deployment
   const HF = 'https://huggingface.co/noobv2ram/lightweight-manga-typeset/resolve/main/';
 
-  // Check if local models exist, otherwise use HuggingFace
-  async function resolveModelPath(filename) {
-    const localPath = 'models/' + filename;
+  // Fetch model as ArrayBuffer — tries local first, falls back to HuggingFace CDN
+  async function fetchModel(filename) {
+    // Try local
     try {
-      const resp = await fetch(localPath, { method: 'HEAD' });
-      if (resp.ok) return localPath;
+      const resp = await fetch('models/' + filename);
+      if (resp.ok && resp.headers.get('content-type')?.includes('octet-stream') || resp.ok && resp.url.includes(filename)) {
+        const buf = await resp.arrayBuffer();
+        if (buf.byteLength > 1000) return buf; // valid binary, not an error page
+      }
     } catch (_) {}
-    return HF + filename;
+    // Fall back to HuggingFace
+    const resp = await fetch(HF + filename);
+    if (!resp.ok) throw new Error(`Failed to fetch model ${filename}: ${resp.status}`);
+    return await resp.arrayBuffer();
   }
 
   // ── ONNX fixed input sizes ───────────────────────────────────────────────
@@ -55,34 +61,36 @@ const ML = (() => {
   async function loadDet(cb) {
     if (detSession) return;
     if (cb) cb('Loading detection model...');
-    const path = await resolveModelPath('manga_det.onnx');
-    detSession = await ort.InferenceSession.create(path, { executionProviders: EP });
+    const buf = await fetchModel('manga_det.onnx');
+    detSession = await ort.InferenceSession.create(buf, { executionProviders: EP });
   }
 
   async function loadOCR(cb) {
     if (ocrEncSession && ocrDecSession && dictionary) return;
     if (cb) cb('Loading OCR model...');
     if (!dictionary) {
-      const dictPath = await resolveModelPath('alphabet-all-v7.txt');
-      const r = await fetch(dictPath);
-      dictionary = (await r.text()).split('\n');
+      const buf = await fetchModel('alphabet-all-v7.txt');
+      const text = new TextDecoder().decode(buf);
+      dictionary = text.split('\n');
       if (dictionary[dictionary.length - 1] === '') dictionary.pop();
     }
     if (!ocrEncSession) {
-      const p = await resolveModelPath('manga_ocr_encoder.onnx');
-      ocrEncSession = await ort.InferenceSession.create(p, { executionProviders: EP });
+      if (cb) cb('Loading OCR encoder...');
+      const buf = await fetchModel('manga_ocr_encoder.onnx');
+      ocrEncSession = await ort.InferenceSession.create(buf, { executionProviders: EP });
     }
     if (!ocrDecSession) {
-      const p = await resolveModelPath('manga_ocr_decoder.onnx');
-      ocrDecSession = await ort.InferenceSession.create(p, { executionProviders: EP });
+      if (cb) cb('Loading OCR decoder...');
+      const buf = await fetchModel('manga_ocr_decoder.onnx');
+      ocrDecSession = await ort.InferenceSession.create(buf, { executionProviders: EP });
     }
   }
 
   async function loadInp(cb) {
     if (inpaintSession) return;
     if (cb) cb('Loading inpainting model...');
-    const path = await resolveModelPath('manga_inpaint.onnx');
-    inpaintSession = await ort.InferenceSession.create(path, { executionProviders: EP });
+    const buf = await fetchModel('manga_inpaint.onnx');
+    inpaintSession = await ort.InferenceSession.create(buf, { executionProviders: EP });
   }
 
   // ── Utility ──────────────────────────────────────────────────────────────
