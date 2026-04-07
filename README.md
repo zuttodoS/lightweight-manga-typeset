@@ -10,7 +10,7 @@ You can co-op with others or edit on multiple devices by saving the cleaned mang
 
 ## Getting Started
 
-1. Open `index.html` in a modern browser (Chrome 113+ recommended for WebGPU acceleration).
+1. Go to https://zuttodos.github.io/lightweight-manga-typeset/ or open `index.html` in a modern browser (Chrome 113+ recommended for WebGPU acceleration).
 2. Click **Load** to select image files (optionally paired with JSON bounding-box data).
 3. Click **Extract** to automatically detect text, OCR it, and clean the images using AI inpainting.
 4. Use **Add** to create new text boxes, or edit existing ones.
