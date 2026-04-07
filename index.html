@@ -1,0 +1,2386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lightweight Manga Typeset</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231f2937'/><text x='4' y='23' font-size='20' font-weight='bold' font-family='sans-serif' fill='%2322d3ee'>T</text><rect x='18' y='6' width='10' height='14' rx='2' fill='none' stroke='%236ee7b7' stroke-width='2'/><line x1='20' y1='10' x2='26' y2='10' stroke='%236ee7b7' stroke-width='1.5'/><line x1='20' y1='13' x2='26' y2='13' stroke='%236ee7b7' stroke-width='1.5'/><line x1='20' y1='16' x2='24' y2='16' stroke='%236ee7b7' stroke-width='1.5'/><circle cx='24' cy='26' r='4' fill='none' stroke='%23f59e0b' stroke-width='2'/><line x1='27' y1='29' x2='30' y2='32' stroke='%23f59e0b' stroke-width='2'/></svg>">
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script>
+  <script src="ml.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #111827;
+      color: #e5e7eb;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      background: #1f2937;
+      border-bottom: 1px solid #374151;
+      padding: 9px 14px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #f9fafb;
+      letter-spacing: 0.02em;
+      margin-right: 6px;
+    }
+
+    .sep {
+      width: 1px;
+      height: 22px;
+      background: #374151;
+      margin: 0 3px;
+      flex-shrink: 0;
+      align-self: center;
+    }
+
+    /* ── Buttons ─────────────────────────────────────────── */
+    button {
+      padding: 5px 11px;
+      border-radius: 5px;
+      border: 1px solid #4b5563;
+      font-size: 0.78rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.13s, color 0.13s, border-color 0.13s;
+      white-space: nowrap;
+      background: #374151;
+      color: #9ca3af;
+      line-height: 1.5;
+    }
+    button:hover:not(:disabled) { background: #4b5563; color: #e5e7eb; }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    button.active {
+      background: #064e3b;
+      color: #6ee7b7;
+      border-color: #065f46;
+    }
+    button.active:hover:not(:disabled) { background: #065f46; }
+
+    button.radio-active {
+      background: #312e81;
+      color: #a5b4fc;
+      border-color: #3730a3;
+    }
+    button.radio-active:hover:not(:disabled) { background: #3730a3; }
+
+    #load-btn {
+      background: #1d4ed8;
+      color: #fff;
+      border-color: #2563eb;
+      font-weight: 600;
+    }
+    #load-btn:hover { background: #1e40af; }
+
+    .btn-az { font-weight: 700; padding: 5px 9px; }
+
+    #file-input { display: none; }
+
+    /* ── Main ──────────────────────────────────────────── */
+    main {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      padding: 14px;
+      min-height: 0;
+    }
+
+    /* Single / Double / Manga — actual size: scrollable, content centered */
+    main.actual-size {
+      overflow: auto;
+      align-items: flex-start;
+      justify-content: center;
+    }
+
+    /* All (webtoon): vertical scroll, no padding so images are edge-to-edge */
+    main.webtoon-mode {
+      overflow-y: auto;
+      overflow-x: hidden;
+      align-items: flex-start;
+      justify-content: flex-start;
+      padding: 0;
+    }
+    main.webtoon-mode.actual-size {
+      overflow: auto;
+    }
+
+    /* ── Placeholder ─────────────────────────────────── */
+    .placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      color: #4b5563;
+      text-align: center;
+    }
+    .placeholder svg { width: 60px; height: 60px; opacity: 0.4; }
+    .placeholder p { font-size: 0.875rem; line-height: 1.7; }
+    .placeholder strong { color: #6b7280; }
+
+    /* ── Viewer (single / double / manga) ────────────── */
+    .viewer {
+      display: none;
+      flex-direction: row;
+      gap: 6px;
+      align-items: flex-start;
+      justify-content: center;
+      max-width: 100%;
+      max-height: 100%;
+    }
+    .viewer.visible { display: flex; }
+    main.actual-size .viewer { max-width: none; max-height: none; }
+
+    .image-slot {
+      position: relative;
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+    }
+
+    .slot-img { display: block; max-width: 100%; }
+
+    /* Fit-to-page height constraint — only for single/double/manga modes */
+    main:not(.actual-size):not(.webtoon-mode) .slot-img {
+      max-height: calc(100vh - 96px);
+      object-fit: contain;
+    }
+
+    /* When header is auto-hidden, use full viewport height */
+    body.autohide-bar main:not(.actual-size):not(.webtoon-mode) .slot-img {
+      max-height: 100vh;
+    }
+
+    /* Remove padding so image touches edges in fit-to-page mode */
+    body.autohide-bar main:not(.actual-size):not(.webtoon-mode) {
+      padding: 0;
+    }
+
+    /* Actual size — no constraints */
+    main.actual-size .slot-img { max-width: none; max-height: none; }
+
+    .slot-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: none; /* overridden to 'auto' by JS when BBs are visible */
+    }
+
+    /* ── Webtoon view (all mode) ──────────────────────── */
+    #webtoon-view {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+    }
+    #webtoon-view.visible { display: flex; }
+
+    /* Webtoon slot: full-width, stacked */
+    .webtoon-slot {
+      width: 100%;
+      flex: none;
+      position: relative;
+      display: flex;
+      justify-content: center;
+    }
+
+    /* Fit mode: image fills container width, unconstrained height */
+    main.webtoon-mode:not(.actual-size) .webtoon-slot .slot-img {
+      width: 100%;
+      height: auto;
+      max-width: 100%;
+      max-height: none;
+    }
+
+    /* Actual size: natural pixel dimensions */
+    main.webtoon-mode.actual-size .webtoon-slot .slot-img {
+      width: auto;
+      height: auto;
+      max-width: none;
+      max-height: none;
+    }
+
+    /* Actual size: shrink slot to image width so the canvas overlay aligns */
+    main.webtoon-mode.actual-size .webtoon-slot {
+      width: auto;
+    }
+
+    /* ── Font select ─────────────────────────────────── */
+    #font-select {
+      padding: 4px 6px;
+      border-radius: 5px;
+      border: 1px solid #4b5563;
+      background: #374151;
+      color: #9ca3af;
+      font-size: 0.78rem;
+      cursor: pointer;
+      outline: none;
+      transition: background 0.13s, color 0.13s;
+    }
+    #font-select:hover { background: #4b5563; color: #e5e7eb; }
+
+    /* ── Color pickers ───────────────────────────────── */
+    .color-pick {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 5px;
+      border: 1px solid #4b5563;
+      background: #374151;
+      color: #9ca3af;
+      font-size: 0.78rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .color-pick:hover { background: #4b5563; color: #e5e7eb; }
+    .color-pick input[type="color"] {
+      width: 20px; height: 20px;
+      border: none; padding: 0;
+      background: transparent;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+
+    /* ── Text edit overlay ───────────────────────────── */
+    .text-edit-overlay {
+      position: absolute;
+      z-index: 300;
+      background: #1f2937;
+      border: 2px solid #22d3ee;
+      border-radius: 4px;
+      padding: 6px;
+      color: #e5e7eb;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      resize: both;
+      outline: none;
+      min-width: 80px;
+      min-height: 40px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+
+    #save-btn {
+      background: #059669;
+      color: #fff;
+      border-color: #10b981;
+      font-weight: 600;
+    }
+    #save-btn:hover { background: #047857; }
+
+    #add-btn.active {
+      background: #064e3b;
+      color: #6ee7b7;
+      border-color: #065f46;
+    }
+
+    #add-multi-btn {
+      background: #374151;
+      color: #9ca3af;
+      font-weight: 600;
+    }
+    #add-multi-btn.active {
+      background: #d97706;
+      color: #fff;
+      border-color: #f59e0b;
+    }
+
+    /* ── Brush size slider ────────────────────────────── */
+    #brush-size {
+      width: 60px;
+      vertical-align: middle;
+      cursor: pointer;
+      accent-color: #22d3ee;
+    }
+
+    /* ── Extract / Inpaint buttons ──────────────────── */
+    #extract-btn {
+      background: #7c3aed;
+      color: #fff;
+      border-color: #8b5cf6;
+      font-weight: 600;
+    }
+    #extract-btn:hover:not(:disabled) { background: #6d28d9; }
+    #extract-btn:disabled { opacity: 0.5; }
+
+    #ml-status {
+      font-size: 0.72rem;
+      color: #fbbf24;
+      white-space: nowrap;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ── Auto-hide header when enabled ── */
+    body.autohide-bar header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 200;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-100%);
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    body.autohide-bar header.bar-visible {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+  </style>
+</head>
+<body>
+
+<header id="header-bar">
+  <h1>LMT</h1>
+
+  <input type="file" id="file-input" multiple accept="image/*,.json">
+  <button id="load-btn" title="Load images and optional JSON files">Load</button>
+  <button id="save-btn" title="Save rendered images">Save</button>
+  <button id="export-json-btn" title="Export bounding boxes to JSON">Export .json</button>
+  <input type="file" id="import-json-input" accept=".json" multiple style="display:none">
+  <button id="import-json-btn" title="Import bounding boxes from JSON">Import .json</button>
+  <button id="export-script-btn" title="Export text lines to script file">Export script</button>
+  <input type="file" id="import-script-input" accept=".txt" style="display:none">
+  <button id="import-script-btn" title="Import text lines from script file">Import script</button>
+  <button id="extract-btn" title="Extract text from visible images (OCR + inpaint)">Extract</button>
+  <input type="number" id="inpaint-pad" min="0" max="100" value="10" step="1" title="Inpaint mask expansion (px per 1000px)" style="width:42px;padding:3px 4px;border-radius:5px;border:1px solid #4b5563;background:#374151;color:#9ca3af;font-size:0.78rem;">
+  <span id="ml-status"></span>
+  <button id="add-btn" title="Add new text box (N)">Add</button>
+  <button id="add-multi-btn" title="Keep Add mode on after creating a box">Add+</button>
+  <button id="brush-btn" title="Brush tool (B)">Brush</button>
+  <button id="eraser-btn" title="Eraser tool (E)">Eraser</button>
+  <button id="inpaint-btn" title="Inpaint brush — paint regions to remove (I)">Inpaint</button>
+  <button id="clone-btn" title="Clone brush — right-click to set source, left-click to paint (H)">Clone</button>
+  <label class="color-pick" title="Brush color">
+    Brush <input type="color" id="brush-color-pick" value="#ffffff">
+  </label>
+  <input type="range" id="brush-size" min="1" max="200" value="5" title="Brush size">
+
+  <div class="sep"></div>
+
+  <button id="prev-btn" disabled title="Previous page (Arrow Left)">&#9664; Prev</button>
+  <button id="next-btn" disabled title="Next page (Arrow Right)">Next &#9654;</button>
+
+  <div class="sep"></div>
+
+  <button id="show-bb-btn"      class="active" title="Toggle text boxes visibility">Text Boxes</button>
+  <button id="show-outline-btn" class="active" title="Toggle outlines and corner handles">Outlines</button>
+  <button id="text-dec-btn"     class="btn-az" title="Decrease text size">A&#8722;</button>
+  <button id="text-inc-btn"     class="btn-az" title="Increase text size">A+</button>
+  <button id="uppercase-btn"    class="btn-az" title="Toggle uppercase">Aa</button>
+  <button id="line-h-dec-btn"   class="btn-az" title="Decrease line spacing">LH&#8722;</button>
+  <button id="line-h-inc-btn"   class="btn-az" title="Increase line spacing">LH+</button>
+
+  <select id="font-select" title="Label font">
+    <option value="system-ui, sans-serif">System</option>
+    <option value="Arial, sans-serif">Arial</option>
+    <option value="Verdana, sans-serif">Verdana</option>
+    <option value="Georgia, serif">Georgia</option>
+    <option value="'Courier New', monospace">Mono</option>
+  </select>
+  <label  class="color-pick" title="Text color">
+    Text <input type="color" id="text-color-pick" value="#ffffff">
+  </label>
+
+  <div class="sep"></div>
+
+  <button id="bg-dec-btn"  class="btn-az" title="Decrease background opacity">BG&#8722;</button>
+  <button id="bg-inc-btn"  class="btn-az" title="Increase background opacity">BG+</button>
+  <label  class="color-pick" title="Background color">
+    BG <input type="color" id="bg-color-pick" value="#000000">
+  </label>
+  <button id="stroke-dec-btn" class="btn-az" title="Decrease text outline">O&#8722;</button>
+  <button id="stroke-inc-btn" class="btn-az" title="Increase text outline">O+</button>
+  <label  class="color-pick" title="Text outline color">
+    OL <input type="color" id="stroke-color-pick" value="#000000">
+  </label>
+
+  <div class="sep"></div>
+
+  <button id="fit-btn" title="Toggle fit-to-page / actual size">Fit to Page</button>
+
+  <div class="sep"></div>
+
+  <button id="single-btn" title="Single page view">Single</button>
+  <button id="double-btn" title="Double page view (comic order)">Double</button>
+  <button id="manga-btn" title="Double page view (right-to-left)">Manga</button>
+  <button id="all-btn" class="radio-active" title="Vertical scroll view">All</button>
+
+  <div class="sep"></div>
+  <button id="autohide-btn" title="Toggle auto-hide toolbar">Auto-hide</button>
+</header>
+
+<main id="main-area" class="actual-size webtoon-mode">
+  <div class="placeholder" id="placeholder">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+      <rect x="3" y="3" width="18" height="18" rx="2"/>
+      <circle cx="8.5" cy="8.5" r="1.5"/>
+      <path d="m21 15-5-5L5 21"/>
+    </svg>
+    <p>Click <strong>Load</strong> to select images (optionally with JSON).<br>
+       Matching base names: <strong>page1.jpg</strong> + <strong>page1.json</strong><br>
+       Or a single bundle JSON: <strong>[{file, content}, …]</strong><br>
+       Or just images — use <strong>Add</strong> to create bounding boxes.</p>
+  </div>
+
+  <div class="viewer" id="viewer">
+    <div class="image-slot" id="slot-a">
+      <img class="slot-img" id="img-a" alt="">
+      <canvas class="slot-canvas" id="canvas-a"></canvas>
+    </div>
+    <div class="image-slot" id="slot-b">
+      <img class="slot-img" id="img-b" alt="">
+      <canvas class="slot-canvas" id="canvas-b"></canvas>
+    </div>
+  </div>
+
+  <div id="webtoon-view"></div>
+</main>
+
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  let items         = [];
+  let currentIndex  = 0;
+  let showBoxes      = true;
+  let showOutlines   = true;                   // default ON
+  let textSizeDelta  = 0;
+  let lineHeightDelta = 0;
+  let textUppercase   = false;
+
+  let textFont       = "'animeace2 reg', sans-serif";
+  let fitToPage      = false;                  // default OFF (actual size)
+  let viewMode       = 'all';                  // default All
+  let webtoonSlots   = [];
+
+  let textColor      = '#ffffff';
+  let bgColor        = '#000000';
+  let bgOpacity      = 0.75;
+  let strokeColor    = '#000000';
+  let strokeWidth    = 0;
+
+  const TEXT_STEP      = 2, TEXT_MIN = -30, TEXT_MAX = 100;
+  const LINE_H_STEP    = 2;
+
+  const BG_OPACITY_STEP = 0.1;
+  const STROKE_STEP     = 1;
+  const EDGE_PX        = 12;   // px from viewport top edge to trigger header reveal
+
+  let autoHideBar = false;
+  let headerTimer = null;
+  let drag        = null; // active label drag: {item, bboxIdx, canvasEl, imgEl, startMouseX, startMouseY, startDx, startDy}
+  let resize      = null; // active corner resize: {item, bboxIdx, corner, canvasEl, imgEl, startMouseX, startMouseY, origBbox}
+  let lastDblClick   = { time: 0, bboxIdx: -1, canvasEl: null };
+  let rotating    = null; // {item, bboxIdx, canvasEl, imgEl, centerX, centerY, startAngle, origRotation}
+  let addMulti    = false;  // "Add mode stays on" toggle
+  let addDraw     = null; // {item, canvasEl, imgEl, startMx, startMy, currentMx, currentMy}
+  let activeTool  = null; // null | 'brush' | 'eraser' | 'add' | 'inpaint'
+  let inpaintStrokes = []; // temporary strokes for inpaint tool (not saved to item)
+  let cloneSource = null; // {x, y} in natural image coords — clone brush source point
+  let cloneDrawing = null; // {item, canvasEl, imgEl, startX, startY, srcStartX, srcStartY, scaleX, scaleY}
+  let brushColor  = '#ffffff';
+  let brushSize   = 5;
+  let drawing     = null; // {item, canvasEl, imgEl, scaleX, scaleY, stroke}
+  let customizeTarget = null; // {item, bboxIdx} — per-box customize mode
+  const undoStack = [];
+  const redoStack = [];
+  const MAX_UNDO  = 50;
+  const CORNER_SIZE = 8;
+
+  const canvasDataMap = new WeakMap(); // canvasEl → {item, imgEl}
+  const SETTINGS_KEY = 'bbviewer-settings';
+  const PROJECT_KEY  = 'bbviewer-project';
+  const DB_NAME = 'lmt-project';
+  const DB_STORE = 'project';
+  let _saveTimer = null;
+
+  // ── DOM ────────────────────────────────────────────────────────────────────
+  const fileInput      = document.getElementById('file-input');
+  const loadBtn        = document.getElementById('load-btn');
+  const prevBtn        = document.getElementById('prev-btn');
+  const nextBtn        = document.getElementById('next-btn');
+  const showBBBtn      = document.getElementById('show-bb-btn');
+  const showOutlineBtn = document.getElementById('show-outline-btn');
+  const textDecBtn     = document.getElementById('text-dec-btn');
+  const textIncBtn     = document.getElementById('text-inc-btn');
+  const uppercaseBtn   = document.getElementById('uppercase-btn');
+  const lineHDecBtn    = document.getElementById('line-h-dec-btn');
+  const lineHIncBtn    = document.getElementById('line-h-inc-btn');
+
+  const fontSelect     = document.getElementById('font-select');
+  const bgDecBtn       = document.getElementById('bg-dec-btn');
+  const bgIncBtn       = document.getElementById('bg-inc-btn');
+  const bgColorPick    = document.getElementById('bg-color-pick');
+  const textColorPick  = document.getElementById('text-color-pick');
+  const strokeDecBtn   = document.getElementById('stroke-dec-btn');
+  const strokeIncBtn   = document.getElementById('stroke-inc-btn');
+  const strokeColorPick= document.getElementById('stroke-color-pick');
+  const fitBtn         = document.getElementById('fit-btn');
+  const headerBar      = document.getElementById('header-bar');
+  const singleBtn      = document.getElementById('single-btn');
+  const doubleBtn      = document.getElementById('double-btn');
+  const mangaBtn       = document.getElementById('manga-btn');
+  const allBtn         = document.getElementById('all-btn');
+  const mainArea       = document.getElementById('main-area');
+  const placeholder    = document.getElementById('placeholder');
+  const viewer         = document.getElementById('viewer');
+  const webtoonView    = document.getElementById('webtoon-view');
+  const slotA          = document.getElementById('slot-a');
+  const slotB          = document.getElementById('slot-b');
+  const imgA           = document.getElementById('img-a');
+  const imgB           = document.getElementById('img-b');
+  const canvasA        = document.getElementById('canvas-a');
+  const canvasB        = document.getElementById('canvas-b');
+  const saveBtn        = document.getElementById('save-btn');
+  const exportJsonBtn  = document.getElementById('export-json-btn');
+  const importJsonBtn  = document.getElementById('import-json-btn');
+  const importJsonInput= document.getElementById('import-json-input');
+  const exportScriptBtn= document.getElementById('export-script-btn');
+  const importScriptBtn= document.getElementById('import-script-btn');
+  const importScriptInput=document.getElementById('import-script-input');
+  const addBtn         = document.getElementById('add-btn');
+  const addMultiBtn    = document.getElementById('add-multi-btn');
+  const brushBtn       = document.getElementById('brush-btn');
+  const eraserBtn      = document.getElementById('eraser-btn');
+  const brushColorPick = document.getElementById('brush-color-pick');
+  const brushSizeSlider= document.getElementById('brush-size');
+  const autohideBtn    = document.getElementById('autohide-btn');
+  const extractBtn     = document.getElementById('extract-btn');
+  const mlStatus       = document.getElementById('ml-status');
+  const inpaintBtn     = document.getElementById('inpaint-btn');
+  const cloneBtn        = document.getElementById('clone-btn');
+
+  // ── Event wiring ──────────────────────────────────────────────────────────
+  loadBtn.addEventListener('click',        () => fileInput.click());
+  fileInput.addEventListener('change',     handleFiles);
+  prevBtn.addEventListener('click',        () => navigate(-1));
+  nextBtn.addEventListener('click',        () => navigate(1));
+  showBBBtn.addEventListener('click',      toggleShowBBs);
+  showOutlineBtn.addEventListener('click', toggleShowOutlines);
+  textDecBtn.addEventListener('click',     () => changeTextSize(-TEXT_STEP));
+  textIncBtn.addEventListener('click',     () => changeTextSize(+TEXT_STEP));
+  uppercaseBtn.addEventListener('click',   toggleUppercase);
+  lineHDecBtn.addEventListener('click',    () => changeLineHeight(-LINE_H_STEP));
+  lineHIncBtn.addEventListener('click',    () => changeLineHeight(+LINE_H_STEP));
+
+  fontSelect.addEventListener('change',    () => { if (customizeTarget) { applySetting('textFont', fontSelect.value); } else { textFont = fontSelect.value; redrawAll(); saveSettings(); } });
+  bgDecBtn.addEventListener('click',       () => changeBgOpacity(-BG_OPACITY_STEP));
+  bgIncBtn.addEventListener('click',       () => changeBgOpacity(+BG_OPACITY_STEP));
+  bgColorPick.addEventListener('change',    () => { if (customizeTarget) { applySetting('bgColor', bgColorPick.value); } else { bgColor = bgColorPick.value; redrawAll(); saveSettings(); } });
+  textColorPick.addEventListener('change',  () => { if (customizeTarget) { applySetting('textColor', textColorPick.value); } else { textColor = textColorPick.value; redrawAll(); saveSettings(); } });
+  strokeDecBtn.addEventListener('click',   () => changeStrokeWidth(-STROKE_STEP));
+  strokeIncBtn.addEventListener('click',   () => changeStrokeWidth(+STROKE_STEP));
+  strokeColorPick.addEventListener('change',() => { if (customizeTarget) { applySetting('strokeColor', strokeColorPick.value); } else { strokeColor = strokeColorPick.value; redrawAll(); saveSettings(); } });
+  fitBtn.addEventListener('click',         toggleFit);
+  singleBtn.addEventListener('click',      () => setViewMode('single'));
+  doubleBtn.addEventListener('click',      () => setViewMode('double-comic'));
+  mangaBtn.addEventListener('click',       () => setViewMode('double-manga'));
+  allBtn.addEventListener('click',         () => setViewMode('all'));
+  saveBtn.addEventListener('click',        saveRenderedImages);
+  exportJsonBtn.addEventListener('click',  exportBboxJson);
+  importJsonBtn.addEventListener('click',  () => importJsonInput.click());
+  importJsonInput.addEventListener('change', importBboxJson);
+  exportScriptBtn.addEventListener('click', exportScript);
+  importScriptBtn.addEventListener('click', () => importScriptInput.click());
+  importScriptInput.addEventListener('change', importScript);
+  addBtn.addEventListener('click',         () => setActiveTool(activeTool === 'add' ? null : 'add'));
+  addMultiBtn.addEventListener('click',   toggleAddMulti);
+  brushBtn.addEventListener('click',      () => setActiveTool(activeTool === 'brush' ? null : 'brush'));
+  eraserBtn.addEventListener('click',     () => setActiveTool(activeTool === 'eraser' ? null : 'eraser'));
+  inpaintBtn.addEventListener('click',   () => setActiveTool(activeTool === 'inpaint' ? null : 'inpaint'));
+  cloneBtn.addEventListener('click',      () => setActiveTool(activeTool === 'clone' ? null : 'clone'));
+  brushColorPick.addEventListener('input',() => { brushColor = brushColorPick.value; saveSettings(); });
+  brushSizeSlider.addEventListener('input',() => { brushSize = +brushSizeSlider.value; saveSettings(); });
+  extractBtn.addEventListener('click',   runExtract);
+  autohideBtn.addEventListener('click',   toggleAutoHide);
+  window.addEventListener('resize',        () => { if (items.length) redrawAll(); });
+  window.addEventListener('beforeunload',  () => { clearTimeout(_saveTimer); _doSaveProject(); });
+
+  // ── Keyboard navigation ───────────────────────────────────────────────────
+  document.addEventListener('keydown', e => {
+    if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); return; }
+    if (e.ctrlKey && (e.key === 'Z' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); redo(); return; }
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'Escape' && activeTool) { setActiveTool(null); return; }
+    if (e.key === 'Escape' && customizeTarget) { customizeTarget = null; syncToolbar(); redrawAll(); return; }
+    if (e.key === 'b' || e.key === 'B') { setActiveTool(activeTool === 'brush' ? null : 'brush'); return; }
+    if (e.key === 'e' || e.key === 'E') { setActiveTool(activeTool === 'eraser' ? null : 'eraser'); return; }
+    if (e.key === 'i' || e.key === 'I') { setActiveTool(activeTool === 'inpaint' ? null : 'inpaint'); return; }
+    if (e.key === 'h' || e.key === 'H') { setActiveTool(activeTool === 'clone' ? null : 'clone'); return; }
+    if (e.key === 'n' || e.key === 'N') { setActiveTool(activeTool === 'add' ? null : 'add'); return; }
+    if (e.key === 'ArrowLeft')  navigate(-1);
+    if (e.key === 'ArrowRight') navigate(1);
+  });
+
+  // ── Header auto-show on top-edge hover ───────────────────────────────────
+  document.addEventListener('mousemove', e => {
+    if (document.body.classList.contains('autohide-bar') && e.clientY <= EDGE_PX) {
+      clearTimeout(headerTimer);
+      headerBar.classList.add('bar-visible');
+    }
+    // Label drag — move entire bbox
+    if (drag) {
+      const ddx = e.clientX - drag.startMouseX;
+      const ddy = e.clientY - drag.startMouseY;
+      const dW = drag.canvasEl.width, dH = drag.canvasEl.height;
+      const dnw = drag.imgEl.naturalWidth || dW, dnh = drag.imgEl.naturalHeight || dH;
+      const dorig = drag.origBbox;
+      const dnorm = (dorig[0] <= 1 && dorig[1] <= 1 && dorig[2] <= 1 && dorig[3] <= 1);
+      const dinvSx = dnorm ? 1 / dW : dnw / dW;
+      const dinvSy = dnorm ? 1 / dH : dnh / dH;
+      const dbx = ddx * dinvSx, dby = ddy * dinvSy;
+      const dbb = drag.item.bboxes[drag.bboxIdx];
+      dbb[0] = dorig[0] + dbx; dbb[1] = dorig[1] + dby;
+      dbb[2] = dorig[2] + dbx; dbb[3] = dorig[3] + dby;
+      redrawSlot(drag.imgEl, drag.canvasEl, drag.item);
+    }
+    // Corner resize drag
+    if (resize) {
+      const dx = e.clientX - resize.startMouseX;
+      const dy = e.clientY - resize.startMouseY;
+      const W = resize.canvasEl.width, H = resize.canvasEl.height;
+      const nw = resize.imgEl.naturalWidth || W, nh = resize.imgEl.naturalHeight || H;
+      const orig = resize.origBbox;
+      const norm = (orig[0] <= 1 && orig[1] <= 1 && orig[2] <= 1 && orig[3] <= 1);
+      const invSx = norm ? 1 / W : nw / W;
+      const invSy = norm ? 1 / H : nh / H;
+      const bx = dx * invSx, by = dy * invSy;
+      const bb = resize.item.bboxes[resize.bboxIdx];
+      if (resize.corner === 'tl' || resize.corner === 'bl') bb[0] = orig[0] + bx;
+      if (resize.corner === 'tr' || resize.corner === 'br') bb[2] = orig[2] + bx;
+      if (resize.corner === 'tl' || resize.corner === 'tr') bb[1] = orig[1] + by;
+      if (resize.corner === 'bl' || resize.corner === 'br') bb[3] = orig[3] + by;
+      redrawSlot(resize.imgEl, resize.canvasEl, resize.item);
+    }
+    // Rotation drag
+    if (rotating) {
+      const rr = rotating.canvasEl.getBoundingClientRect();
+      const rmx = e.clientX - rr.left, rmy = e.clientY - rr.top;
+      const curAngle = Math.atan2(rmy - rotating.centerY, rmx - rotating.centerX);
+      rotating.item.rotations[rotating.bboxIdx] = rotating.origRotation + (curAngle - rotating.startAngle);
+      redrawSlot(rotating.imgEl, rotating.canvasEl, rotating.item);
+    }
+    // Add-draw preview
+    if (addDraw) {
+      const ar = addDraw.canvasEl.getBoundingClientRect();
+      const amx = Math.max(0, Math.min(addDraw.canvasEl.width, e.clientX - ar.left));
+      const amy = Math.max(0, Math.min(addDraw.canvasEl.height, e.clientY - ar.top));
+      addDraw.currentMx = amx;
+      addDraw.currentMy = amy;
+      redrawSlot(addDraw.imgEl, addDraw.canvasEl, addDraw.item);
+      const actx = addDraw.canvasEl.getContext('2d');
+      const arx = Math.min(addDraw.startMx, amx), ary = Math.min(addDraw.startMy, amy);
+      const arw = Math.abs(amx - addDraw.startMx), arh = Math.abs(amy - addDraw.startMy);
+      actx.setLineDash([4, 4]);
+      actx.strokeStyle = '#f59e0b';
+      actx.lineWidth = 2;
+      actx.strokeRect(arx, ary, arw, arh);
+      actx.setLineDash([]);
+    }
+    // Brush / eraser / inpaint drawing
+    if (drawing) {
+      const dr = drawing.canvasEl.getBoundingClientRect();
+      const dmx = e.clientX - dr.left, dmy = e.clientY - dr.top;
+      drawing.stroke.points.push({ x: dmx * drawing.scaleX, y: dmy * drawing.scaleY });
+      if (drawing.isInpaint) {
+        // Redraw slot then overlay all inpaint strokes + active stroke as red
+        redrawSlot(drawing.imgEl, drawing.canvasEl, drawing.item);
+        renderInpaintOverlay(drawing.canvasEl, [...inpaintStrokes, drawing.stroke],
+          drawing.canvasEl.width, drawing.canvasEl.height,
+          drawing.imgEl.naturalWidth || drawing.canvasEl.width,
+          drawing.imgEl.naturalHeight || drawing.canvasEl.height);
+      } else {
+        redrawSlot(drawing.imgEl, drawing.canvasEl, drawing.item, drawing.stroke);
+      }
+    }
+    // Clone brush drawing
+    if (cloneDrawing) {
+      const hd = cloneDrawing;
+      const dr = hd.canvasEl.getBoundingClientRect();
+      const mx = e.clientX - dr.left, my = e.clientY - dr.top;
+      const natX = mx * hd.scaleX, natY = my * hd.scaleY;
+      const dx = natX - hd.startX, dy = natY - hd.startY;
+      const srcX = hd.srcStartX + dx, srcY = hd.srcStartY + dy;
+      const sz = Math.round(brushSize * hd.scaleX);
+      if (sz < 1) return;
+
+      if (!hd.points) hd.points = [];
+      hd.points.push({ natX, natY, srcX, srcY });
+
+      // Redraw existing strokes first (so previous work stays visible)
+      redrawSlot(hd.imgEl, hd.canvasEl, hd.item);
+
+      // Then draw all current clone dabs on top from composite (live preview)
+      const ctx = hd.canvasEl.getContext('2d');
+      const nw = hd.composite.width, nh = hd.composite.height;
+      const dsx = hd.canvasEl.width / nw, dsy = hd.canvasEl.height / nh;
+      for (const p of hd.points) {
+        const dispX = p.natX * dsx, dispY = p.natY * dsy;
+        const dispSz = sz * dsx;
+        // Direct drawImage — no clip, no alpha, no quality loss
+        ctx.drawImage(hd.composite,
+          Math.round(p.srcX - sz / 2), Math.round(p.srcY - sz / 2), sz, sz,
+          Math.round(dispX - dispSz / 2), Math.round(dispY - dispSz / 2), Math.round(dispSz), Math.round(dispSz));
+      }
+    }
+  });
+  headerBar.addEventListener('mouseleave', () => {
+    headerTimer = setTimeout(() => headerBar.classList.remove('bar-visible'), 600);
+  });
+  headerBar.addEventListener('mouseenter', () => clearTimeout(headerTimer));
+
+  // ── Label drag end ────────────────────────────────────────────────────────
+  document.addEventListener('mouseup', () => {
+    const hadInteraction = drag || resize || rotating;
+    if (drag) { drag.canvasEl.style.cursor = 'default'; drag = null; }
+    if (resize) { resize.canvasEl.style.cursor = 'default'; resize = null; }
+    if (rotating) { rotating.canvasEl.style.cursor = 'default'; rotating = null; }
+    if (hadInteraction) saveProjectData();
+    if (addDraw) {
+      const ad = addDraw;
+      addDraw = null;
+      const cmx = ad.currentMx ?? ad.startMx;
+      const cmy = ad.currentMy ?? ad.startMy;
+      const arx = Math.min(ad.startMx, cmx), ary = Math.min(ad.startMy, cmy);
+      const arw = Math.abs(cmx - ad.startMx), arh = Math.abs(cmy - ad.startMy);
+      if (arw < 5 || arh < 5) { redrawSlot(ad.imgEl, ad.canvasEl, ad.item); return; }
+      pushUndo();
+      const W = ad.canvasEl.width, H = ad.canvasEl.height;
+      const nw = ad.imgEl.naturalWidth || W, nh = ad.imgEl.naturalHeight || H;
+      const sx = nw / W, sy = nh / H;
+      const bbox = [arx * sx, ary * sy, (arx + arw) * sx, (ary + arh) * sy, ''];
+      ad.item.bboxes.push(bbox);
+      ad.item.textOffsets.push({ dx: 0, dy: 0 });
+      ad.item.rotations.push(0);
+      if (!ad.item.customs) ad.item.customs = [];
+      ad.item.customs.push(null);
+      ad.item.labelRects.push(null);
+      const bboxIdx = ad.item.bboxes.length - 1;
+      redrawSlot(ad.imgEl, ad.canvasEl, ad.item);
+      showTextEditor(ad.item, bboxIdx, ad.canvasEl, ad.imgEl, true);
+    }
+    if (drawing) {
+      const d = drawing;
+      drawing = null;
+      if (d.isInpaint) {
+        // Inpaint tool: collect stroke, then run ML inpainting
+        inpaintStrokes.push(d.stroke);
+        runInpaintBrush(d.item, d.imgEl, d.canvasEl);
+      } else {
+        // Regular brush/eraser: save stroke
+        if (!d.item.strokes) d.item.strokes = [];
+        d.item.strokes.push(d.stroke);
+        redrawSlot(d.imgEl, d.canvasEl, d.item);
+        saveProjectData();
+      }
+    }
+    if (cloneDrawing) {
+      const hd = cloneDrawing;
+      cloneDrawing = null;
+      if (hd.points && hd.points.length) {
+        const sz = Math.round(brushSize * hd.scaleX);
+        const nw = hd.composite.width, nh = hd.composite.height;
+        const dsx = hd.canvasEl.width / nw, dsy = hd.canvasEl.height / nh;
+
+        // Find bounding box of painted area in display coords
+        let dMinX = Infinity, dMinY = Infinity, dMaxX = -Infinity, dMaxY = -Infinity;
+        const dispSz = sz * dsx;
+        for (const p of hd.points) {
+          const dx = p.natX * dsx, dy = p.natY * dsy;
+          if (dx - dispSz/2 < dMinX) dMinX = dx - dispSz/2;
+          if (dy - dispSz/2 < dMinY) dMinY = dy - dispSz/2;
+          if (dx + dispSz/2 > dMaxX) dMaxX = dx + dispSz/2;
+          if (dy + dispSz/2 > dMaxY) dMaxY = dy + dispSz/2;
+        }
+        dMinX = Math.max(0, Math.floor(dMinX)); dMinY = Math.max(0, Math.floor(dMinY));
+        dMaxX = Math.min(hd.canvasEl.width, Math.ceil(dMaxX));
+        dMaxY = Math.min(hd.canvasEl.height, Math.ceil(dMaxY));
+        const dpw = dMaxX - dMinX, dph = dMaxY - dMinY;
+
+        if (dpw > 0 && dph > 0) {
+          // Capture the clone region directly from the current canvas (matches preview exactly)
+          const capturedData = hd.canvasEl.getContext('2d').getImageData(dMinX, dMinY, dpw, dph);
+
+          // Convert to natural-resolution patch coords
+          const natX = dMinX / dsx, natY = dMinY / dsy;
+          const natW = dpw / dsx, natH = dph / dsy;
+
+          // Scale captured display-resolution data to natural resolution
+          const captC = document.createElement('canvas'); captC.width = dpw; captC.height = dph;
+          captC.getContext('2d').putImageData(capturedData, 0, 0);
+          const patchC = document.createElement('canvas');
+          patchC.width = Math.round(natW); patchC.height = Math.round(natH);
+          patchC.getContext('2d').drawImage(captC, 0, 0, dpw, dph, 0, 0, patchC.width, patchC.height);
+
+          const dataUrl = patchC.toDataURL('image/png');
+          if (!hd.item.strokes) hd.item.strokes = [];
+          hd.item.strokes.push({ isPatch: true, patchDataUrl: dataUrl,
+            x: Math.round(natX), y: Math.round(natY), w: patchC.width, h: patchC.height });
+          const cImg = new Image(); cImg.src = dataUrl;
+          patchImageCache.set(dataUrl, cImg);
+          cImg.onload = () => redrawSlot(hd.imgEl, hd.canvasEl, hd.item);
+        }
+      }
+      redrawSlot(hd.imgEl, hd.canvasEl, hd.item);
+      saveProjectData();
+    }
+  });
+
+  // ── Setup interaction for the two fixed canvases ──────────────────────────
+  setupCanvasInteraction(canvasA, () => canvasDataMap.get(canvasA));
+  setupCanvasInteraction(canvasB, () => canvasDataMap.get(canvasB));
+
+  // ── Init: restore saved settings + project data, scan custom fonts ────────
+  loadSettings();
+  loadProjectData().then(loaded => {
+    if (loaded && items.length) {
+      // Redraw after images have loaded and layout is complete
+      redrawAll();
+      // Retry after a delay in case images were still decoding
+      setTimeout(redrawAll, 500);
+      setTimeout(redrawAll, 2000);
+    }
+  });
+
+  // ── Custom fonts (inline list — add new entries when dropping fonts into fonts/) ──
+  const CUSTOM_FONTS = [
+    '000Belisa-Regular.ttf',
+    '000CaptainComic-Regular.otf',
+    '000FMAtlas-Regular.otf',
+    '000RangSun-Regular.ttf',
+    '000SkippySharpiCiel-Regular.ttf',
+    '000WhizBang-Roman.ttf',
+    'animeace2_reg.ttf',
+  ];
+  (async function loadCustomFonts() {
+    const fontsLoaded = [];
+    for (const fileName of CUSTOM_FONTS) {
+      const dot = fileName.lastIndexOf('.');
+      const baseName = dot >= 0 ? fileName.slice(0, dot) : fileName;
+      const ext = dot >= 0 ? fileName.slice(dot + 1).toLowerCase() : '';
+      const formatMap = { ttf: 'truetype', otf: 'opentype', woff: 'woff', woff2: 'woff2' };
+      if (!formatMap[ext]) continue;
+      const familyName = baseName.replace(/[-_]/g, ' ');
+      const face = new FontFace(familyName, `url('fonts/${fileName}')`, { weight: 'normal', style: 'normal' });
+      try {
+        await face.load();
+        document.fonts.add(face);
+        const opt = document.createElement('option');
+        opt.value = `'${familyName}', sans-serif`;
+        opt.textContent = familyName;
+        fontSelect.insertBefore(opt, fontSelect.firstChild);
+        fontsLoaded.push(familyName);
+      } catch {}
+    }
+    if (fontsLoaded.length && !fontsLoaded.some(f => textFont.includes(f))) {
+      textFont = `'${fontsLoaded[0]}', sans-serif`;
+    }
+    fontSelect.value = textFont;
+    if (items.length) redrawAll();
+  })();
+
+  // ── File loading ──────────────────────────────────────────────────────────
+  // Detects the bundle format: array of {file, content} objects.
+  function isBundleJson(data) {
+    return Array.isArray(data) && data.length > 0 &&
+           data[0] !== null && typeof data[0] === 'object' &&
+           'file' in data[0] && 'content' in data[0];
+  }
+
+  function handleFiles(e) {
+    const files = Array.from(e.target.files);
+    const imageMap = {};
+    const jsonFiles = [];
+    const IMAGE_EXT = new Set(['jpg','jpeg','png','gif','bmp','webp','tiff','tif','avif']);
+
+    files.forEach(f => {
+      const dot  = f.name.lastIndexOf('.');
+      const ext  = dot >= 0 ? f.name.slice(dot + 1).toLowerCase() : '';
+      const base = dot >= 0 ? f.name.slice(0, dot) : f.name;
+      if (IMAGE_EXT.has(ext)) imageMap[base] = f;
+      else if (ext === 'json') jsonFiles.push({ base, file: f });
+    });
+
+    e.target.value = '';
+
+    // Read all JSON files first
+    const jsonPromise = jsonFiles.length
+      ? Promise.all(jsonFiles.map(({ base, file }) => new Promise(resolve => {
+          const jr = new FileReader();
+          jr.onload = ev => {
+            let data = [];
+            try { data = JSON.parse(ev.target.result); } catch {}
+            resolve({ base, data });
+          };
+          jr.readAsText(file);
+        })))
+      : Promise.resolve([]);
+
+    jsonPromise.then(jsonResults => {
+      const pairs = [];
+      const matched = new Set();
+
+      jsonResults.forEach(({ base, data }) => {
+        if (isBundleJson(data)) {
+          data.forEach(entry => {
+            const dot     = String(entry.file).lastIndexOf('.');
+            const imgBase = dot >= 0 ? entry.file.slice(0, dot) : entry.file;
+            if (imageMap[imgBase]) {
+              matched.add(imgBase);
+              pairs.push({ name: imgBase, imgFile: imageMap[imgBase],
+                           bboxes: Array.isArray(entry.content) ? entry.content : [] });
+            }
+          });
+        } else {
+          if (imageMap[base]) {
+            matched.add(base);
+            pairs.push({ name: base, imgFile: imageMap[base],
+                         bboxes: Array.isArray(data) ? data : [] });
+          }
+        }
+      });
+
+      // Add images without matching JSON (empty bboxes)
+      for (const base of Object.keys(imageMap)) {
+        if (!matched.has(base)) {
+          pairs.push({ name: base, imgFile: imageMap[base], bboxes: [] });
+        }
+      }
+
+      if (!pairs.length) {
+        alert('No images found.');
+        return;
+      }
+
+      // Load images
+      Promise.all(pairs.map(({ name, imgFile, bboxes }) => new Promise(resolve => {
+        const ir = new FileReader();
+        ir.onload = ev => resolve({
+          name, fileName: imgFile.name, src: ev.target.result, bboxes,
+          textOffsets: bboxes.map(() => ({ dx: 0, dy: 0 })),
+          labelRects: [],
+          rotations: bboxes.map(() => 0),
+          strokes: [],
+          customs: [],
+        });
+        ir.readAsDataURL(imgFile);
+      }))).then(results => {
+        items        = results.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        currentIndex = 0;
+        undoStack.length = 0;
+        redoStack.length = 0;
+        document.body.classList.add('has-images');
+        renderItem();
+        saveProjectData();
+      });
+    });
+  }
+
+  // ── Navigation step ────────────────────────────────────────────────────────
+  function navStep() {
+    return (viewMode === 'double-comic' || viewMode === 'double-manga') ? 2 : 1;
+  }
+
+  // ── Slot assignment (single / double / manga) ──────────────────────────────
+  function getSlotAssignments() {
+    const primary   = items[currentIndex];
+    const secondary = items[currentIndex + 1];
+
+    if (viewMode === 'single') {
+      slotA.style.display = 'flex';
+      slotB.style.display = 'none';
+      return [{ item: primary, imgEl: imgA, canvasEl: canvasA }];
+    }
+
+    if (viewMode === 'double-comic') {
+      slotA.style.display = 'flex';
+      slotB.style.display = secondary ? 'flex' : 'none';
+      const asgn = [{ item: primary, imgEl: imgA, canvasEl: canvasA }];
+      if (secondary) asgn.push({ item: secondary, imgEl: imgB, canvasEl: canvasB });
+      return asgn;
+    }
+
+    // double-manga: right = primary, left = secondary
+    slotB.style.display = 'flex';
+    slotA.style.display = secondary ? 'flex' : 'none';
+    const asgn = [{ item: primary, imgEl: imgB, canvasEl: canvasB }];
+    if (secondary) asgn.unshift({ item: secondary, imgEl: imgA, canvasEl: canvasA });
+    return asgn;
+  }
+
+  // ── Rendering ─────────────────────────────────────────────────────────────
+  function renderItem() {
+    if (!items.length) return;
+    if (viewMode === 'all') { renderWebtoon(); return; }
+
+    placeholder.style.display = 'none';
+    viewer.classList.add('visible');
+
+    getSlotAssignments().forEach(({ item, imgEl, canvasEl }) => {
+      const draw = () => {
+        // Ensure layout is complete before measuring clientWidth/clientHeight
+        if (imgEl.clientWidth && imgEl.clientHeight) {
+          redrawSlot(imgEl, canvasEl, item);
+        } else {
+          requestAnimationFrame(() => redrawSlot(imgEl, canvasEl, item));
+        }
+      };
+      if (imgEl.src !== item.src) { imgEl.src = item.src; imgEl.onload = draw; }
+      else if (imgEl.complete && imgEl.naturalWidth) draw();
+      else imgEl.onload = draw;
+    });
+
+    updateControls();
+  }
+
+  function renderWebtoon() {
+    placeholder.style.display = 'none';
+    webtoonView.innerHTML = '';
+    webtoonSlots = [];
+    webtoonView.classList.add('visible');
+
+    items.forEach(item => {
+      const slot   = document.createElement('div');
+      slot.className = 'image-slot webtoon-slot';
+
+      const img    = document.createElement('img');
+      img.className = 'slot-img';
+      img.alt = item.name;
+
+      const canvas = document.createElement('canvas');
+      canvas.className = 'slot-canvas';
+
+      slot.appendChild(img);
+      slot.appendChild(canvas);
+      webtoonView.appendChild(slot);
+      webtoonSlots.push({ imgEl: img, canvasEl: canvas, item });
+      setupCanvasInteraction(canvas, () => canvasDataMap.get(canvas));
+
+      img.src = item.src;
+      const draw = () => redrawSlot(img, canvas, item);
+      if (img.complete && img.naturalWidth) draw();
+      else img.onload = draw;
+    });
+
+    updateControls();
+  }
+
+  function redrawAll() {
+    if (!items.length) return;
+    if (viewMode === 'all') {
+      webtoonSlots.forEach(({ imgEl, canvasEl, item }) => redrawSlot(imgEl, canvasEl, item));
+    } else {
+      getSlotAssignments().forEach(({ item, imgEl, canvasEl }) => redrawSlot(imgEl, canvasEl, item));
+    }
+  }
+
+  function redrawSlot(imgEl, canvasEl, item, activeStroke) {
+    const w = imgEl.clientWidth;
+    const h = imgEl.clientHeight;
+    if (!w || !h) return;
+
+    canvasEl.width        = w;
+    canvasEl.height       = h;
+    canvasEl.style.width  = w + 'px';
+    canvasEl.style.height = h + 'px';
+    // Position canvas exactly over the image (handles centered images in double/manga mode)
+    canvasEl.style.left   = imgEl.offsetLeft + 'px';
+    canvasEl.style.top    = imgEl.offsetTop + 'px';
+    // Always enable pointer events if there are strokes, a tool is active, or boxes are shown
+    const hasStrokes = item && (item.strokes?.length || activeTool);
+    canvasEl.style.pointerEvents = ((showBoxes || hasStrokes || activeTool) && item) ? 'auto' : 'none';
+
+    canvasDataMap.set(canvasEl, { item, imgEl });
+
+    const ctx = canvasEl.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+
+    const nw = imgEl.naturalWidth  || w;
+    const nh = imgEl.naturalHeight || h;
+
+    // Always render brush strokes (they are part of the image, not UI)
+    if (item && (item.strokes?.length || activeStroke)) {
+      renderStrokes(ctx, item.strokes || [], activeStroke, w, h, nw, nh);
+    }
+
+    if (!showBoxes || !item) return;
+
+    item.labelRects = item.bboxes.map((bb, i) =>
+      drawBox(ctx, bb, w, h, nw, nh, item.textOffsets?.[i], item.rotations?.[i], item.customs?.[i])
+    );
+
+    // Customize mode red indicator
+    if (customizeTarget && customizeTarget.item === item) {
+      const ci = customizeTarget.bboxIdx;
+      if (ci < item.bboxes.length) {
+        const sc = getBBoxScreenCoords(item.bboxes[ci], canvasEl, imgEl);
+        const crot = item.rotations?.[ci] || 0;
+        const pad = 5;
+        ctx.save();
+        ctx.translate(sc.x + sc.w / 2, sc.y + sc.h / 2);
+        ctx.rotate(crot);
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 3]);
+        ctx.strokeRect(-sc.w / 2 - pad, -sc.h / 2 - pad, sc.w + pad * 2, sc.h + pad * 2);
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+    }
+  }
+
+  // Cache for pre-loaded patch images (keyed by dataUrl)
+  const patchImageCache = new Map();
+
+  function ensurePatchCached(stroke) {
+    if (!stroke.isPatch || !stroke.patchDataUrl) return;
+    if (patchImageCache.has(stroke.patchDataUrl)) return;
+    const img = new Image();
+    img.src = stroke.patchDataUrl;
+    patchImageCache.set(stroke.patchDataUrl, img);
+    // Trigger redraw once loaded
+    img.onload = () => { if (items.length) redrawAll(); };
+  }
+
+  function renderStrokes(ctx, strokes, activeStroke, w, h, nw, nh) {
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const octx = off.getContext('2d');
+    const sx = w / (nw || w), sy = h / (nh || h);
+
+    const all = activeStroke ? [...strokes, activeStroke] : strokes;
+    for (const s of all) {
+      // Inpaint patch stroke — draw from cache
+      if (s.isPatch && s.patchDataUrl) {
+        ensurePatchCached(s);
+        const cachedImg = patchImageCache.get(s.patchDataUrl);
+        if (cachedImg && cachedImg.complete && cachedImg.naturalWidth) {
+          octx.globalCompositeOperation = 'source-over';
+          octx.drawImage(cachedImg, s.x * sx, s.y * sy, s.w * sx, s.h * sy);
+        }
+        continue;
+      }
+      if (!s.points || !s.points.length) continue;
+      octx.globalCompositeOperation = s.isEraser ? 'destination-out' : 'source-over';
+      octx.strokeStyle = s.isEraser ? 'rgba(0,0,0,1)' : s.color;
+      octx.lineWidth = s.size * sx;
+      octx.lineCap = 'round';
+      octx.lineJoin = 'round';
+      octx.beginPath();
+      octx.moveTo(s.points[0].x * sx, s.points[0].y * sy);
+      for (let i = 1; i < s.points.length; i++) {
+        octx.lineTo(s.points[i].x * sx, s.points[i].y * sy);
+      }
+      if (s.points.length === 1) octx.lineTo(s.points[0].x * sx + 0.1, s.points[0].y * sy);
+      octx.stroke();
+    }
+
+    ctx.drawImage(off, 0, 0);
+  }
+
+  // ── Drawing ────────────────────────────────────────────────────────────────
+  // nw/nh: natural image dimensions (used to scale pixel-unit coords)
+  // textOffset: {dx, dy} drag offset for the text label
+  // rotation: angle in radians
+  // Returns the label background rect {x,y,w,h} for drag hit-testing, or null.
+  function drawBox(ctx, bb, W, H, nw, nh, textOffset, rotation, custom) {
+    const [x0, y0, x1, y1, text] = bb;
+    const rot = rotation || 0;
+    // Effective per-box style (custom overrides globals)
+    const eFont       = custom?.textFont       ?? textFont;
+    const eTextColor  = custom?.textColor      ?? textColor;
+    const eBgColor    = custom?.bgColor        ?? bgColor;
+    const eBgOpacity  = custom?.bgOpacity      ?? bgOpacity;
+    const eStrokeCol  = custom?.strokeColor    ?? strokeColor;
+    const eStrokeW    = custom?.strokeWidth    ?? strokeWidth;
+    const eSizeDelta  = custom?.textSizeDelta  ?? textSizeDelta;
+    const eLineHDelta = custom?.lineHeightDelta?? lineHeightDelta;
+    const eUppercase  = custom?.textUppercase  ?? textUppercase;
+
+    // Per-bbox coord detection: any value > 1 → pixel coords
+    const norm = (x0 <= 1 && y0 <= 1 && x1 <= 1 && y1 <= 1);
+    const sx = norm ? W : W / nw;
+    const sy = norm ? H : H / nh;
+
+    const x     = x0 * sx;
+    const bw    = (x1 - x0) * sx;
+    const bh    = (y1 - y0) * sy;
+    const y     = y0 * sy;
+
+    // Center of the bbox
+    const bcx = x + bw / 2;
+    const bcy = y + bh / 2;
+
+    if (showOutlines) {
+      ctx.save();
+      ctx.translate(bcx, bcy);
+      ctx.rotate(rot);
+
+      ctx.strokeStyle = '#22d3ee';
+      ctx.lineWidth   = Math.max(1, Math.min(3, W * 0.002));
+      ctx.fillStyle   = 'rgba(34, 211, 238, 0.06)';
+      ctx.fillRect(-bw / 2, -bh / 2, bw, bh);
+      ctx.strokeRect(-bw / 2, -bh / 2, bw, bh);
+
+      // Corner resize handles
+      const cs = CORNER_SIZE;
+      ctx.fillStyle = 'rgba(34, 211, 238, 0.55)';
+      ctx.strokeStyle = '#0e7490';
+      ctx.lineWidth = 1;
+      [[-bw / 2, -bh / 2], [bw / 2, -bh / 2], [-bw / 2, bh / 2], [bw / 2, bh / 2]].forEach(([cx, cy]) => {
+        ctx.fillRect(cx - cs / 2, cy - cs / 2, cs, cs);
+        ctx.strokeRect(cx - cs / 2, cy - cs / 2, cs, cs);
+      });
+
+      ctx.restore();
+    }
+
+    if (text == null || text === '') return null;
+
+    const label = eUppercase ? String(text).toUpperCase() : String(text);
+    const { dx = 0, dy = 0 } = textOffset || {};
+    const cx = bcx + dx;
+    const cy = bcy + dy;
+
+    const base     = Math.max(9, Math.min(18, bh * 0.13, bw * 0.09));
+    const fontSize = Math.max(2, base + eSizeDelta);
+
+    ctx.font         = `600 ${fontSize}px ${eFont}`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+
+    const wrapW  = Math.max(20, bw);
+    const lines  = label.split('\n').flatMap(para => wrapText(ctx, para, wrapW));
+    const lineH  = fontSize * 1.35 + eLineHDelta;
+    const blockH = lines.length * lineH;
+    const blockW = maxLineWidth(ctx, lines) + 16;
+    const padBot = 6;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(rot);
+
+    const bgX = -blockW / 2;
+    const bgY = -blockH / 2 - 2;
+
+    ctx.fillStyle = hexToRgba(eBgColor, eBgOpacity);
+    roundRect(ctx, bgX, bgY, blockW, blockH + 4 + padBot, 4);
+    ctx.fill();
+
+    if (eStrokeW > 0) {
+      ctx.strokeStyle = eStrokeCol;
+      ctx.lineWidth   = eStrokeW * 2;
+      ctx.lineJoin    = 'round';
+      ctx.miterLimit  = 2;
+      lines.forEach((line, i) => {
+        ctx.strokeText(line, 0, -(lines.length - 1) * lineH / 2 + i * lineH);
+      });
+    }
+    ctx.fillStyle = eTextColor;
+    lines.forEach((line, i) => {
+      ctx.fillText(line, 0, -(lines.length - 1) * lineH / 2 + i * lineH);
+    });
+
+    ctx.restore();
+
+    // Return hit rect (axis-aligned bounding box of the rotated rect) for drag hit-testing
+    const hw = blockW / 2, hh = (blockH + 4 + padBot) / 2;
+    const cosR = Math.abs(Math.cos(rot)), sinR = Math.abs(Math.sin(rot));
+    const aabbW = hw * cosR + hh * sinR;
+    const aabbH = hw * sinR + hh * cosR;
+    return { x: cx - aabbW, y: cy - aabbH, w: aabbW * 2, h: aabbH * 2 };
+  }
+
+  // ── Text helpers ──────────────────────────────────────────────────────────
+  function wrapText(ctx, text, maxPx) {
+    // Break a single token (no spaces) into lines char by char
+    function breakToken(token) {
+      const parts = [];
+      let part = '';
+      for (const ch of token) {
+        const test = part + ch;
+        if (ctx.measureText(test).width > maxPx && part) { parts.push(part); part = ch; }
+        else part = test;
+      }
+      if (part) parts.push(part);
+      return parts.length ? parts : [token];
+    }
+
+    if (ctx.measureText(text).width <= maxPx) return [text];
+    const words = text.split(' ');
+    const lines = [];
+    let line = '';
+    for (const word of words) {
+      const test = line ? line + ' ' + word : word;
+      if (ctx.measureText(test).width <= maxPx) {
+        line = test;
+      } else if (line) {
+        lines.push(line);
+        if (ctx.measureText(word).width <= maxPx) { line = word; }
+        else { const b = breakToken(word); b.slice(0, -1).forEach(l => lines.push(l)); line = b[b.length - 1]; }
+      } else {
+        const b = breakToken(word); b.slice(0, -1).forEach(l => lines.push(l)); line = b[b.length - 1];
+      }
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  function maxLineWidth(ctx, lines) {
+    return lines.reduce((m, l) => Math.max(m, ctx.measureText(l).width), 0);
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);     ctx.quadraticCurveTo(x + w, y,     x + w, y + r);
+    ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);     ctx.quadraticCurveTo(x,     y + h, x,     y + h - r);
+    ctx.lineTo(x, y + r);         ctx.quadraticCurveTo(x,     y,     x + r, y);
+    ctx.closePath();
+  }
+
+  // ── Color helpers ─────────────────────────────────────────────────────────
+  function hexToRgba(hex, alpha) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha.toFixed(2)})`;
+  }
+
+  // ── BBox screen-coord helper ───────────────────────────────────────────────
+  function getBBoxScreenCoords(bb, canvasEl, imgEl) {
+    const W = canvasEl.width, H = canvasEl.height;
+    const nw = imgEl.naturalWidth || W, nh = imgEl.naturalHeight || H;
+    const [x0, y0, x1, y1] = bb;
+    const norm = (x0 <= 1 && y0 <= 1 && x1 <= 1 && y1 <= 1);
+    const sx = norm ? W : W / nw, sy = norm ? H : H / nh;
+    return { x: x0 * sx, y: y0 * sy, w: (x1 - x0) * sx, h: (y1 - y0) * sy };
+  }
+
+  // ── Text editor overlay ──────────────────────────────────────────────────
+  let _skipCommitUndo = false;
+  function showTextEditor(item, bboxIdx, canvasEl, imgEl, skipUndo) {
+    hideTextEditor();
+    _skipCommitUndo = !!skipUndo;
+    const bb = item.bboxes[bboxIdx];
+    const sc = getBBoxScreenCoords(bb, canvasEl, imgEl);
+    const slot = canvasEl.parentElement;
+    const canvasRect = canvasEl.getBoundingClientRect();
+    const slotRect = slot.getBoundingClientRect();
+
+    const ta = document.createElement('textarea');
+    ta.className = 'text-edit-overlay';
+    ta.value = bb[4] || '';
+    ta.style.left = (canvasRect.left - slotRect.left + sc.x) + 'px';
+    ta.style.top  = (canvasRect.top  - slotRect.top  + sc.y) + 'px';
+    ta.style.width  = Math.max(80, sc.w) + 'px';
+    ta.style.height = Math.max(40, sc.h) + 'px';
+
+    const commit = () => {
+      if (!_skipCommitUndo) pushUndo();
+      _skipCommitUndo = false;
+      const newText = ta.value.trim();
+      hideTextEditor();
+      if (newText === '') {
+        // Delete the bbox if text is empty
+        item.bboxes.splice(bboxIdx, 1);
+        item.textOffsets.splice(bboxIdx, 1);
+        item.rotations.splice(bboxIdx, 1);
+        if (item.customs) item.customs.splice(bboxIdx, 1);
+        item.labelRects.splice(bboxIdx, 1);
+        if (customizeTarget && customizeTarget.item === item && customizeTarget.bboxIdx === bboxIdx) customizeTarget = null;
+      } else {
+        bb[4] = newText;
+      }
+      redrawSlot(imgEl, canvasEl, item);
+      saveProjectData();
+      // Exit add mode if not multi-add
+      if (activeTool === 'add' && !addMulti) setActiveTool(null);
+    };
+
+    ta.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); commit(); }
+    });
+    ta.addEventListener('blur', () => setTimeout(() => {
+      if (document.querySelector('.text-edit-overlay') === ta) commit();
+    }, 100));
+
+    slot.appendChild(ta);
+    ta.focus();
+    ta.select();
+  }
+
+  function hideTextEditor() {
+    document.querySelectorAll('.text-edit-overlay').forEach(el => el.remove());
+  }
+
+  // ── Save rendered images ─────────────────────────────────────────────────
+  function getVisibleItems() {
+    if (viewMode === 'all') return items;
+    const step = navStep();
+    const visible = [items[currentIndex]];
+    if (step === 2 && items[currentIndex + 1]) visible.push(items[currentIndex + 1]);
+    return visible.filter(Boolean);
+  }
+
+  async function saveRenderedImages() {
+    if (!items.length) return;
+    const savedOutlines = showOutlines;
+    showOutlines = false;
+
+    for (const item of getVisibleItems()) {
+      await new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement('canvas');
+          c.width  = img.naturalWidth;
+          c.height = img.naturalHeight;
+          const ctx = c.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+
+          const W = img.naturalWidth, H = img.naturalHeight;
+          // Always render strokes (they are part of the image)
+          if (item.strokes?.length) renderStrokes(ctx, item.strokes, null, W, H, W, H);
+          // Only render text boxes if Text Boxes toggle is enabled
+          if (showBoxes) {
+            item.bboxes.forEach((bb, i) => {
+              drawBox(ctx, bb, W, H, W, H, item.textOffsets?.[i], item.rotations?.[i], item.customs?.[i]);
+            });
+          }
+
+          const fileName = item.fileName || (item.name + '.png');
+          const ext = fileName.split('.').pop().toLowerCase();
+          const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp' };
+          const mime = mimeMap[ext] || 'image/png';
+
+          c.toBlob(blob => {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = fileName;
+            a.click();
+            setTimeout(() => { URL.revokeObjectURL(a.href); resolve(); }, 200);
+          }, mime, mime === 'image/jpeg' ? 0.95 : undefined);
+        };
+        img.src = item.src;
+      });
+    }
+
+    showOutlines = savedOutlines;
+  }
+
+  // ── Export bounding boxes to JSON ─────────────────────────────────────────
+  // Mirrors: backend.py combine_jsons() → lmt_textbox.json format
+  // Bundle JSON: [{file, content}, ...] where content = [[x0,y0,x1,y1,"text"], ...]
+  // Coordinates normalized to 0-1
+  function exportBboxJson() {
+    if (!items.length) return;
+    const bundle = [];
+    for (const item of items) {
+      // Get natural image dimensions for normalization
+      const img = new Image();
+      img.src = item.src;
+      const nw = img.naturalWidth || 1, nh = img.naturalHeight || 1;
+      const content = (item.bboxes || []).map(bb => {
+        const [x0, y0, x1, y1, text] = bb;
+        // Normalize to 0-1 if not already
+        const isNorm = x0 <= 1 && y0 <= 1 && x1 <= 1 && y1 <= 1;
+        if (isNorm) return [x0, y0, x1, y1, text || ''];
+        return [
+          +(x0 / nw).toFixed(6), +(y0 / nh).toFixed(6),
+          +(x1 / nw).toFixed(6), +(y1 / nh).toFixed(6),
+          text || ''
+        ];
+      });
+      // Include per-box customize configs (only non-null entries)
+      const customs = (item.customs || []).map(c => c || null);
+      const hasCustoms = customs.some(c => c !== null);
+      const entry = { file: item.name, content };
+      if (hasCustoms) entry.customize = customs;
+      bundle.push(entry);
+    }
+    const json = JSON.stringify(bundle, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'lmt_textbox.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // ── Import bounding boxes from JSON ───────────────────────────────────────
+  // Reads bundle JSON [{file, content}, ...] and applies bboxes to loaded images
+  function importBboxJson(e) {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    e.target.value = '';
+    pushUndo();
+
+    // Build lookup: base name (no extension) → item
+    const itemMap = {};
+    for (const item of items) {
+      itemMap[item.name] = item;
+      if (item.fileName) itemMap[item.fileName] = item;
+    }
+
+    let totalApplied = 0;
+    let filesProcessed = 0;
+
+    for (const file of files) {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        try {
+          const data = JSON.parse(ev.target.result);
+          if (!Array.isArray(data)) { console.warn(`${file.name}: not an array, skipping`); return; }
+
+          for (const entry of data) {
+            const fileName = entry.file || '';
+            const content = entry.content || [];
+            const dot = fileName.lastIndexOf('.');
+            const baseName = dot >= 0 ? fileName.slice(0, dot) : fileName;
+            const item = itemMap[baseName] || itemMap[fileName];
+            if (!item) continue;
+
+            item.bboxes = content.map(row => {
+              if (!Array.isArray(row) || row.length < 4) return null;
+              return [row[0], row[1], row[2], row[3], row[4] || ''];
+            }).filter(Boolean);
+            item.textOffsets = item.bboxes.map(() => ({ dx: 0, dy: 0 }));
+            item.rotations = item.bboxes.map(() => 0);
+            // Import per-box customize configs if present
+            const customs = entry.customize;
+            item.customs = Array.isArray(customs)
+              ? item.bboxes.map((_, i) => (customs[i] && typeof customs[i] === 'object') ? customs[i] : null)
+              : item.bboxes.map(() => null);
+            item.labelRects = [];
+            totalApplied++;
+          }
+        } catch (err) {
+          console.warn(`Failed to parse ${file.name}:`, err);
+        }
+
+        filesProcessed++;
+        if (filesProcessed === files.length) {
+          redrawAll();
+          saveProjectData();
+          alert(`Imported bounding boxes for ${totalApplied} image(s) from ${files.length} file(s).`);
+        }
+      };
+      reader.readAsText(file);
+    }
+  }
+
+  // ── Export script (text lines) ────────────────────────────────────────────
+  // Exports visible bounding box texts, one per line. Newlines within text become \n.
+  function exportScript() {
+    const visible = getVisibleItems();
+    if (!visible.length) return;
+    const lines = [];
+    for (const item of visible) {
+      for (const bb of (item.bboxes || [])) {
+        const text = (bb[4] || '').replace(/\n/g, '\\n');
+        lines.push(text);
+      }
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'lmt_script.txt';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // ── Import script (text lines) ────────────────────────────────────────────
+  // Replaces visible bounding box texts with lines from a text file.
+  // Line count must match total bbox count across visible images.
+  function importScript(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const lines = ev.target.result.split('\n');
+      const visible = getVisibleItems();
+      let totalBoxes = 0;
+      for (const item of visible) totalBoxes += (item.bboxes || []).length;
+
+      if (lines.length !== totalBoxes) {
+        alert(`Line count mismatch: file has ${lines.length} lines but there are ${totalBoxes} bounding boxes.`);
+        return;
+      }
+
+      pushUndo();
+      let li = 0;
+      for (const item of visible) {
+        for (const bb of (item.bboxes || [])) {
+          bb[4] = lines[li].replace(/\\n/g, '\n');
+          li++;
+        }
+      }
+      redrawAll();
+      saveProjectData();
+      alert(`Imported ${li} text lines.`);
+    };
+    reader.readAsText(file);
+  }
+
+  // ── Canvas interaction (drag labels + forward scroll) ─────────────────────
+
+  // Helper: get rotated corner positions in screen coords
+  function getRotatedCorners(bb, canvasEl, imgEl, rot) {
+    const sc = getBBoxScreenCoords(bb, canvasEl, imgEl);
+    const cx = sc.x + sc.w / 2, cy = sc.y + sc.h / 2;
+    const hw = sc.w / 2, hh = sc.h / 2;
+    const cosR = Math.cos(rot || 0), sinR = Math.sin(rot || 0);
+    return [[-hw, -hh], [hw, -hh], [-hw, hh], [hw, hh]].map(([lx, ly]) => ({
+      x: cx + lx * cosR - ly * sinR,
+      y: cy + lx * sinR + ly * cosR,
+    }));
+  }
+
+  function setupCanvasInteraction(canvasEl, getData) {
+    canvasEl.addEventListener('mousemove', e => {
+      if (activeTool || drawing) { canvasEl.style.cursor = 'crosshair'; return; }
+      if (addDraw) { canvasEl.style.cursor = 'crosshair'; return; }
+      if (!showBoxes) return;
+      const d = getData(); if (!d?.item?.labelRects) { canvasEl.style.cursor = 'default'; return; }
+      const r = canvasEl.getBoundingClientRect();
+      const mx = e.clientX - r.left, my = e.clientY - r.top;
+
+      if (drag) { canvasEl.style.cursor = 'grabbing'; return; }
+      if (resize || rotating) return;
+
+      // Check corner proximity — left-click resizes, show resize cursor
+      for (let i = 0; i < d.item.bboxes.length; i++) {
+        const corners = getRotatedCorners(d.item.bboxes[i], canvasEl, d.imgEl, d.item.rotations?.[i]);
+        const cursors = ['nwse-resize', 'nesw-resize', 'nesw-resize', 'nwse-resize'];
+        for (let ci = 0; ci < corners.length; ci++) {
+          if (Math.abs(mx - corners[ci].x) < CORNER_SIZE && Math.abs(my - corners[ci].y) < CORNER_SIZE) {
+            canvasEl.style.cursor = cursors[ci]; return;
+          }
+        }
+      }
+
+      const hit = d.item.labelRects.some(lr => lr && mx >= lr.x && mx <= lr.x + lr.w && my >= lr.y && my <= lr.y + lr.h);
+      canvasEl.style.cursor = hit ? 'grab' : 'default';
+    });
+
+    // Left-click: brush/eraser, resize corners, double-click edit, drag labels, or add-draw
+    canvasEl.addEventListener('mousedown', e => {
+      if (e.button !== 0) return;
+      const d = getData(); if (!d?.item) return;
+      const r = canvasEl.getBoundingClientRect();
+      const mx = e.clientX - r.left, my = e.clientY - r.top;
+
+      // Brush / eraser tool
+      if (activeTool === 'brush' || activeTool === 'eraser') {
+        const bnw = d.imgEl.naturalWidth || canvasEl.width;
+        const bnh = d.imgEl.naturalHeight || canvasEl.height;
+        const scX = bnw / canvasEl.width, scY = bnh / canvasEl.height;
+        if (!d.item.strokes) d.item.strokes = [];
+        const stroke = {
+          points: [{ x: mx * scX, y: my * scY }],
+          color: brushColor, size: brushSize * scX,
+          isEraser: activeTool === 'eraser',
+        };
+        pushUndo();
+        drawing = { item: d.item, canvasEl, imgEl: d.imgEl, scaleX: scX, scaleY: scY, stroke };
+        e.preventDefault();
+        return;
+      }
+
+      // Inpaint brush tool (temporary red strokes)
+      if (activeTool === 'inpaint') {
+        const bnw = d.imgEl.naturalWidth || canvasEl.width;
+        const bnh = d.imgEl.naturalHeight || canvasEl.height;
+        const scX = bnw / canvasEl.width, scY = bnh / canvasEl.height;
+        const stroke = {
+          points: [{ x: mx * scX, y: my * scY }],
+          size: brushSize * scX,
+        };
+        drawing = { item: d.item, canvasEl, imgEl: d.imgEl, scaleX: scX, scaleY: scY, stroke, isInpaint: true };
+        e.preventDefault();
+        return;
+      }
+
+      // Clone brush tool (left-click to paint from source)
+      if (activeTool === 'clone') {
+        if (!cloneSource) { alert('Right-click on the image first to set the clone source.'); return; }
+        const bnw = d.imgEl.naturalWidth || canvasEl.width;
+        const bnh = d.imgEl.naturalHeight || canvasEl.height;
+        const scX = bnw / canvasEl.width, scY = bnh / canvasEl.height;
+        const natX = mx * scX, natY = my * scY;
+        pushUndo();
+        // Build composite (image + strokes) at natural resolution for sampling
+        const compC = document.createElement('canvas');
+        compC.width = bnw; compC.height = bnh;
+        const compCtx = compC.getContext('2d');
+        compCtx.drawImage(d.imgEl, 0, 0);
+        if (d.item.strokes && d.item.strokes.length) {
+          renderStrokesOnCanvas(compCtx, d.item.strokes, bnw, bnh, bnw, bnh);
+        }
+        cloneDrawing = {
+          item: d.item, canvasEl, imgEl: d.imgEl,
+          composite: compC, // natural-resolution composite for sampling
+          scaleX: scX, scaleY: scY,
+          startX: natX, startY: natY,
+          srcStartX: cloneSource.x, srcStartY: cloneSource.y,
+        };
+        if (!d.item.strokes) d.item.strokes = [];
+        e.preventDefault();
+        return;
+      }
+
+      // Add tool: start drawing new bbox (but not while editing text)
+      if (activeTool === 'add' && !document.querySelector('.text-edit-overlay')) {
+        addDraw = { item: d.item, canvasEl, imgEl: d.imgEl, startMx: mx, startMy: my, currentMx: mx, currentMy: my };
+        e.preventDefault();
+        return;
+      }
+
+      if (!showBoxes) return;
+
+      // Check corners for resize (left-click drag on corners)
+      for (let i = 0; i < d.item.bboxes.length; i++) {
+        const corners = getRotatedCorners(d.item.bboxes[i], canvasEl, d.imgEl, d.item.rotations?.[i]);
+        const cornerNames = ['tl', 'tr', 'bl', 'br'];
+        const cursors = ['nwse-resize', 'nesw-resize', 'nesw-resize', 'nwse-resize'];
+        for (let ci = 0; ci < corners.length; ci++) {
+          if (Math.abs(mx - corners[ci].x) < CORNER_SIZE && Math.abs(my - corners[ci].y) < CORNER_SIZE) {
+            pushUndo();
+            resize = {
+              item: d.item, bboxIdx: i, corner: cornerNames[ci],
+              canvasEl, imgEl: d.imgEl,
+              startMouseX: e.clientX, startMouseY: e.clientY,
+              origBbox: [...d.item.bboxes[i]],
+            };
+            canvasEl.style.cursor = cursors[ci];
+            e.preventDefault();
+            return;
+          }
+        }
+      }
+
+      // Double left-click detection for text editing
+      const now = Date.now();
+      if (d.item.labelRects) {
+        for (let i = 0; i < d.item.labelRects.length; i++) {
+          const lr = d.item.labelRects[i];
+          if (lr && mx >= lr.x && mx <= lr.x + lr.w && my >= lr.y && my <= lr.y + lr.h) {
+            if (now - lastDblClick.time < 400 && lastDblClick.bboxIdx === i && lastDblClick.canvasEl === canvasEl) {
+              showTextEditor(d.item, i, canvasEl, d.imgEl);
+              lastDblClick = { time: 0, bboxIdx: -1, canvasEl: null };
+              e.preventDefault();
+              return;
+            }
+            lastDblClick = { time: now, bboxIdx: i, canvasEl };
+            break;
+          }
+        }
+      }
+
+      // Single left-click drag on label
+      if (!d.item.labelRects) return;
+      for (let i = 0; i < d.item.labelRects.length; i++) {
+        const lr = d.item.labelRects[i];
+        if (lr && mx >= lr.x && mx <= lr.x + lr.w && my >= lr.y && my <= lr.y + lr.h) {
+          pushUndo();
+          drag = {
+            item: d.item, bboxIdx: i, canvasEl, imgEl: d.imgEl,
+            startMouseX: e.clientX, startMouseY: e.clientY,
+            origBbox: [...d.item.bboxes[i]],
+          };
+          canvasEl.style.cursor = 'grabbing';
+          e.preventDefault();
+          break;
+        }
+      }
+    });
+
+    // Prevent browser context menu on canvas
+    canvasEl.addEventListener('contextmenu', e => e.preventDefault());
+
+    // Right-click: clone source set OR corner rotate drag
+    canvasEl.addEventListener('mousedown', function(e) {
+      if (e.button !== 2) return;
+      const d = getData(); if (!d?.item) return;
+      const r = canvasEl.getBoundingClientRect();
+      const mx = e.clientX - r.left, my = e.clientY - r.top;
+
+      // Clone brush: right-click sets source point
+      if (activeTool === 'clone') {
+        const bnw = d.imgEl.naturalWidth || canvasEl.width;
+        const bnh = d.imgEl.naturalHeight || canvasEl.height;
+        cloneSource = { x: mx * (bnw / canvasEl.width), y: my * (bnh / canvasEl.height) };
+        e.preventDefault();
+        return;
+      }
+
+      if (!showBoxes) return;
+
+      for (let i = 0; i < d.item.bboxes.length; i++) {
+        const sc = getBBoxScreenCoords(d.item.bboxes[i], canvasEl, d.imgEl);
+        const bcx = sc.x + sc.w / 2, bcy = sc.y + sc.h / 2;
+        const corners = getRotatedCorners(d.item.bboxes[i], canvasEl, d.imgEl, d.item.rotations?.[i]);
+        const hitC = corners.find(c => Math.abs(mx - c.x) < CORNER_SIZE && Math.abs(my - c.y) < CORNER_SIZE);
+        if (hitC) {
+          pushUndo();
+          const startAngle = Math.atan2(my - bcy, mx - bcx);
+          rotating = {
+            item: d.item, bboxIdx: i, canvasEl, imgEl: d.imgEl,
+            centerX: bcx, centerY: bcy,
+            startAngle, origRotation: d.item.rotations?.[i] || 0,
+          };
+          canvasEl.style.cursor = 'crosshair';
+          e.preventDefault();
+          return;
+        }
+      }
+
+      // Right-click on text label → customize mode; on empty → clear
+      if (d.item.labelRects) {
+        for (let i = 0; i < d.item.labelRects.length; i++) {
+          const lr = d.item.labelRects[i];
+          if (lr && mx >= lr.x && mx <= lr.x + lr.w && my >= lr.y && my <= lr.y + lr.h) {
+            customizeTarget = { item: d.item, bboxIdx: i };
+            syncToolbar();
+            redrawSlot(d.imgEl, canvasEl, d.item);
+            e.preventDefault();
+            return;
+          }
+        }
+      }
+      // Clicked empty space — exit customize mode
+      if (customizeTarget) { customizeTarget = null; syncToolbar(); redrawAll(); }
+    });
+
+    // Forward wheel events so webtoon vertical scroll still works
+    canvasEl.addEventListener('wheel', e => {
+      e.preventDefault();
+      mainArea.scrollBy(e.deltaX, e.deltaY);
+    }, { passive: false });
+  }
+
+  // ── Inpaint overlay rendering ──────────────────────────────────────────────
+  function renderInpaintOverlay(canvasEl, strokes, w, h, nw, nh) {
+    const ctx = canvasEl.getContext('2d');
+    const sx = w / (nw || w), sy = h / (nh || h);
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    ctx.strokeStyle = '#ff0000';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const s of strokes) {
+      if (!s.points.length) continue;
+      ctx.lineWidth = s.size * sx;
+      ctx.beginPath();
+      ctx.moveTo(s.points[0].x * sx, s.points[0].y * sy);
+      for (let i = 1; i < s.points.length; i++) {
+        ctx.lineTo(s.points[i].x * sx, s.points[i].y * sy);
+      }
+      if (s.points.length === 1) ctx.lineTo(s.points[0].x * sx + 0.1, s.points[0].y * sy);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ── ML: Inpaint brush ────────────────────────────────────────────────────
+  async function runInpaintBrush(item, imgEl, canvasEl) {
+    if (!inpaintStrokes.length) return;
+    mlStatus.textContent = 'Inpainting...';
+    extractBtn.disabled = true;
+    try {
+      pushUndo();
+      const nw = imgEl.naturalWidth || canvasEl.width;
+      const nh = imgEl.naturalHeight || canvasEl.height;
+
+      // Build mask and boxes from brush strokes
+      const { maskCanvas, boxes } = ML.buildStrokeMask(inpaintStrokes, nw, nh);
+
+      // Build composite: base image + existing strokes at natural resolution
+      const composite = await buildCompositeCanvas(item, imgEl);
+
+      // Run inpainting → returns patches
+      const patches = await ML.inpaint(composite, maskCanvas,
+        msg => { mlStatus.textContent = msg; }, boxes);
+
+      // Add patches as special strokes
+      if (!item.strokes) item.strokes = [];
+      for (const p of patches) {
+        item.strokes.push({ isPatch: true, patchDataUrl: p.dataUrl, x: p.x, y: p.y, w: p.w, h: p.h });
+      }
+
+      inpaintStrokes = [];
+      redrawSlot(imgEl, canvasEl, item);
+      saveProjectData();
+      mlStatus.textContent = 'Inpainting done.';
+    } catch (err) {
+      console.error('Inpaint error:', err);
+      mlStatus.textContent = 'Inpaint failed: ' + err.message;
+    }
+    extractBtn.disabled = false;
+    setTimeout(() => { mlStatus.textContent = ''; }, 3000);
+  }
+
+  /** Build composite canvas: base image + all strokes rendered at natural resolution. */
+  function buildCompositeCanvas(item, imgEl) {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        // Render strokes at natural resolution (same as renderStrokes but 1:1 scale)
+        if (item.strokes && item.strokes.length) {
+          renderStrokesOnCanvas(ctx, item.strokes, c.width, c.height, c.width, c.height);
+        }
+        resolve(c);
+      };
+      img.src = item.src;
+    });
+  }
+
+  /** Render strokes on a canvas context at given scale. Used for compositing. */
+  function renderStrokesOnCanvas(ctx, strokes, w, h, nw, nh) {
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const octx = off.getContext('2d');
+    const sx = w / (nw || w), sy = h / (nh || h);
+
+    for (const s of strokes) {
+      if (s.isPatch) continue; // patches drawn separately
+      if (!s.points || !s.points.length) continue;
+      octx.globalCompositeOperation = s.isEraser ? 'destination-out' : 'source-over';
+      octx.strokeStyle = s.isEraser ? 'rgba(0,0,0,1)' : s.color;
+      octx.lineWidth = s.size * sx;
+      octx.lineCap = 'round'; octx.lineJoin = 'round';
+      octx.beginPath();
+      octx.moveTo(s.points[0].x * sx, s.points[0].y * sy);
+      for (let i = 1; i < s.points.length; i++) octx.lineTo(s.points[i].x * sx, s.points[i].y * sy);
+      if (s.points.length === 1) octx.lineTo(s.points[0].x * sx + 0.1, s.points[0].y * sy);
+      octx.stroke();
+    }
+    ctx.drawImage(off, 0, 0);
+
+    // Draw patches on top
+    for (const s of strokes) {
+      if (!s.isPatch || !s.patchDataUrl) continue;
+      const pImg = new Image();
+      pImg.src = s.patchDataUrl;
+      // Synchronous draw works if image is already loaded (data URL)
+      ctx.drawImage(pImg, s.x * sx, s.y * sy, s.w * sx, s.h * sy);
+    }
+  }
+
+  // ── ML: Extract ──────────────────────────────────────────────────────────
+  async function runExtract() {
+    if (!items.length) return;
+    const visible = getVisibleItems();
+    if (!visible.length) return;
+    if (!confirm('Extract will OCR and inpaint the visible image(s). This may take a long time and will replace all current bounding boxes.\n\nContinue?')) return;
+    extractBtn.disabled = true;
+    pushUndo();
+    try {
+      for (let vi = 0; vi < visible.length; vi++) {
+        const item = visible[vi];
+        mlStatus.textContent = `Extracting ${vi + 1}/${visible.length}...`;
+        const result = await ML.extract(item.src,
+          msg => { mlStatus.textContent = `[${vi + 1}/${visible.length}] ${msg}`; });
+
+        // Set bboxes from OCR
+        item.bboxes = result.bboxes;
+        item.textOffsets = result.bboxes.map(() => ({ dx: 0, dy: 0 }));
+        item.rotations = result.bboxes.map(() => 0);
+        item.customs = result.bboxes.map(() => null);
+        item.labelRects = [];
+
+        // Add inpaint patches as strokes (not replacing image)
+        if (!item.strokes) item.strokes = [];
+        for (const p of result.patches) {
+          item.strokes.push({ isPatch: true, patchDataUrl: p.dataUrl, x: p.x, y: p.y, w: p.w, h: p.h });
+        }
+      }
+      renderItem();
+      saveProjectData();
+      mlStatus.textContent = `Extracted ${visible.length} image(s).`;
+    } catch (err) {
+      console.error('Extract error:', err);
+      mlStatus.textContent = 'Extract failed: ' + err.message;
+    }
+    extractBtn.disabled = false;
+    setTimeout(() => { mlStatus.textContent = ''; }, 5000);
+  }
+
+  // ── Undo / Redo ───────────────────────────────────────────────────────────
+  function snapshotState() {
+    return JSON.parse(JSON.stringify(items.map(it => ({
+      bboxes: it.bboxes, textOffsets: it.textOffsets, rotations: it.rotations,
+      strokes: it.strokes, customs: it.customs,
+    }))));
+  }
+  function pushUndo() {
+    undoStack.push(snapshotState());
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack.length = 0;
+  }
+  function undo() {
+    if (!undoStack.length) return;
+    redoStack.push(snapshotState());
+    const snap = undoStack.pop();
+    snap.forEach((s, i) => { if (items[i]) Object.assign(items[i], s); });
+    customizeTarget = null;
+    syncToolbar(); redrawAll(); saveProjectData();
+  }
+  function redo() {
+    if (!redoStack.length) return;
+    undoStack.push(snapshotState());
+    const snap = redoStack.pop();
+    snap.forEach((s, i) => { if (items[i]) Object.assign(items[i], s); });
+    customizeTarget = null;
+    syncToolbar(); redrawAll(); saveProjectData();
+  }
+
+  // ── Customize helpers ────────────────────────────────────────────────────
+  function ensureCustom(item, bboxIdx) {
+    if (!item.customs) item.customs = item.bboxes.map(() => null);
+    if (!item.customs[bboxIdx]) item.customs[bboxIdx] = {};
+    return item.customs[bboxIdx];
+  }
+  // Track whether we already pushed undo for the current continuous interaction (e.g. color drag)
+  let _custUndoPushed = false;
+  function applySetting(key, value) {
+    if (customizeTarget) {
+      if (!_custUndoPushed) { pushUndo(); _custUndoPushed = true; }
+      const c = ensureCustom(customizeTarget.item, customizeTarget.bboxIdx);
+      c[key] = value;
+      redrawAll(); saveProjectData();
+    } else {
+      redrawAll(); saveSettings();
+    }
+  }
+  // Reset the flag on mouseup / change end so next interaction gets a fresh undo
+  document.addEventListener('mouseup', () => { _custUndoPushed = false; });
+  document.addEventListener('change', () => { _custUndoPushed = false; });
+
+  // Update toolbar controls to reflect customize target or global values
+  function syncToolbar() {
+    if (customizeTarget) {
+      const c = customizeTarget.item.customs?.[customizeTarget.bboxIdx];
+      fontSelect.value       = c?.textFont       ?? textFont;
+      textColorPick.value    = c?.textColor      ?? textColor;
+      bgColorPick.value      = c?.bgColor        ?? bgColor;
+      strokeColorPick.value  = c?.strokeColor    ?? strokeColor;
+      uppercaseBtn.classList.toggle('active', c?.textUppercase ?? textUppercase);
+    } else {
+      fontSelect.value       = textFont;
+      textColorPick.value    = textColor;
+      bgColorPick.value      = bgColor;
+      strokeColorPick.value  = strokeColor;
+      uppercaseBtn.classList.toggle('active', textUppercase);
+    }
+  }
+
+  // ── Controls ──────────────────────────────────────────────────────────────
+  function setActiveTool(tool) {
+    activeTool = tool;
+    addBtn.classList.toggle('active', tool === 'add');
+    brushBtn.classList.toggle('active', tool === 'brush');
+    eraserBtn.classList.toggle('active', tool === 'eraser');
+    inpaintBtn.classList.toggle('active', tool === 'inpaint');
+    cloneBtn.classList.toggle('active', tool === 'clone');
+    if (tool !== 'add') addDraw = null;
+    if (tool !== 'inpaint') inpaintStrokes = [];
+    if (tool !== 'clone') cloneDrawing = null;
+  }
+
+  function toggleAddMulti() {
+    addMulti = !addMulti;
+    addMultiBtn.classList.toggle('active', addMulti);
+  }
+
+  function toggleAutoHide() {
+    autoHideBar = !autoHideBar;
+    autohideBtn.classList.toggle('active', autoHideBar);
+    document.body.classList.toggle('autohide-bar', autoHideBar);
+    if (!autoHideBar) headerBar.classList.remove('bar-visible');
+    saveSettings();
+  }
+
+  function navigate(dir) {
+    if (viewMode === 'all') return;
+    const step = navStep();
+    const next = currentIndex + dir * step;
+    if (next < 0 || next >= items.length) return;
+    currentIndex = next;
+    renderItem();
+    saveProjectData();
+  }
+
+  function toggleShowBBs() {
+    showBoxes = !showBoxes;
+    showBBBtn.classList.toggle('active', showBoxes);
+    redrawAll(); saveSettings();
+  }
+
+  function toggleShowOutlines() {
+    showOutlines = !showOutlines;
+    showOutlineBtn.classList.toggle('active', showOutlines);
+    redrawAll(); saveSettings();
+  }
+
+  function toggleUppercase() {
+    if (customizeTarget) {
+      pushUndo();
+      const c = ensureCustom(customizeTarget.item, customizeTarget.bboxIdx);
+      const newVal = !(c.textUppercase ?? textUppercase);
+      c.textUppercase = newVal;
+      uppercaseBtn.classList.toggle('active', newVal);
+      redrawAll(); saveProjectData();
+      return;
+    } else {
+      textUppercase = !textUppercase;
+      uppercaseBtn.classList.toggle('active', textUppercase);
+      redrawAll(); saveSettings();
+    }
+  }
+
+  function changeTextSize(delta) {
+    if (customizeTarget) {
+      const c = ensureCustom(customizeTarget.item, customizeTarget.bboxIdx);
+      applySetting('textSizeDelta', Math.max(TEXT_MIN, Math.min(TEXT_MAX, (c.textSizeDelta ?? textSizeDelta) + delta)));
+    } else {
+      textSizeDelta = Math.max(TEXT_MIN, Math.min(TEXT_MAX, textSizeDelta + delta));
+      redrawAll(); saveSettings();
+    }
+  }
+
+  function changeLineHeight(delta) {
+    if (customizeTarget) {
+      const c = ensureCustom(customizeTarget.item, customizeTarget.bboxIdx);
+      applySetting('lineHeightDelta', (c.lineHeightDelta ?? lineHeightDelta) + delta);
+    } else {
+      lineHeightDelta += delta;
+      redrawAll(); saveSettings();
+    }
+  }
+
+  function changeBgOpacity(delta) {
+    if (customizeTarget) {
+      const c = ensureCustom(customizeTarget.item, customizeTarget.bboxIdx);
+      applySetting('bgOpacity', Math.max(0, Math.min(1, (c.bgOpacity ?? bgOpacity) + delta)));
+    } else {
+      bgOpacity = Math.max(0, Math.min(1, bgOpacity + delta));
+      redrawAll(); saveSettings();
+    }
+  }
+
+  function changeStrokeWidth(delta) {
+    if (customizeTarget) {
+      const c = ensureCustom(customizeTarget.item, customizeTarget.bboxIdx);
+      applySetting('strokeWidth', Math.max(0, (c.strokeWidth ?? strokeWidth) + delta));
+    } else {
+      strokeWidth = Math.max(0, strokeWidth + delta);
+      redrawAll(); saveSettings();
+    }
+  }
+
+  function toggleFit() {
+    fitToPage = !fitToPage;
+    fitBtn.classList.toggle('active', fitToPage);
+    mainArea.classList.toggle('actual-size', !fitToPage);
+    saveSettings();
+    requestAnimationFrame(() => requestAnimationFrame(redrawAll));
+  }
+
+  function setViewMode(mode) {
+    viewMode = mode;
+
+    singleBtn.classList.toggle('radio-active', mode === 'single');
+    doubleBtn.classList.toggle('radio-active', mode === 'double-comic');
+    mangaBtn.classList.toggle('radio-active',  mode === 'double-manga');
+    allBtn.classList.toggle('radio-active',    mode === 'all');
+
+    mainArea.classList.toggle('webtoon-mode', mode === 'all');
+    saveSettings();
+
+    if (!items.length) { updateControls(); return; }
+
+    if (mode === 'all') {
+      viewer.classList.remove('visible');
+      renderWebtoon();
+    } else {
+      webtoonView.classList.remove('visible');
+      webtoonSlots = [];
+      renderItem();
+    }
+  }
+
+  // ── Settings persistence ───────────────────────────────────────────────────
+  function saveSettings() {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      showBoxes, showOutlines, textSizeDelta, lineHeightDelta,
+      textUppercase, textFont, fitToPage, viewMode,
+      textColor, bgColor, bgOpacity,
+      strokeColor, strokeWidth, autoHideBar,
+      brushColor, brushSize,
+    }));
+  }
+
+  // ── IndexedDB persistence (no size limit, unlike localStorage) ──────────
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => { req.result.createObjectStore(DB_STORE); };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  function saveProjectData() {
+    // Debounce: only save 500ms after the last call
+    clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(_doSaveProject, 500);
+  }
+  function _doSaveProject() {
+    const data = items.map(it => ({
+      name: it.name, fileName: it.fileName, src: it.src,
+      bboxes: it.bboxes, textOffsets: it.textOffsets, rotations: it.rotations,
+      strokes: it.strokes || [], customs: it.customs || [],
+    }));
+    // Save to IndexedDB (async, large capacity)
+    openDB().then(db => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).put({ items: data, currentIndex }, 'project');
+      tx.oncomplete = () => db.close();
+    }).catch(e => console.warn('saveProjectData IndexedDB failed:', e));
+
+    // Also save metadata (without images) to localStorage as sync backup
+    try {
+      const meta = items.map(it => ({
+        name: it.name, fileName: it.fileName,
+        bboxes: it.bboxes, textOffsets: it.textOffsets, rotations: it.rotations,
+        customs: it.customs || [],
+        // Don't save src or strokes to localStorage (too large)
+      }));
+      localStorage.setItem(PROJECT_KEY, JSON.stringify({ meta, currentIndex }));
+    } catch (_) {}
+  }
+
+  function loadProjectData() {
+    return openDB().then(db => {
+      return new Promise(resolve => {
+        const tx = db.transaction(DB_STORE, 'readonly');
+        const req = tx.objectStore(DB_STORE).get('project');
+        req.onsuccess = () => {
+          db.close();
+          const p = req.result;
+          if (!p || !Array.isArray(p.items) || !p.items.length) {
+            console.log('[Persist] No project data in IndexedDB');
+            resolve(false); return;
+          }
+          console.log(`[Persist] Loaded ${p.items.length} items from IndexedDB`);
+          items = p.items.map(it => ({
+            name: it.name, fileName: it.fileName, src: it.src,
+            bboxes: it.bboxes || [],
+            textOffsets: it.textOffsets || (it.bboxes||[]).map(() => ({ dx: 0, dy: 0 })),
+            rotations: it.rotations || (it.bboxes||[]).map(() => 0),
+            strokes: it.strokes || [],
+            customs: it.customs || [],
+            labelRects: [],
+          }));
+          currentIndex = p.currentIndex || 0;
+          if (currentIndex >= items.length) currentIndex = 0;
+
+          // Pre-cache all patch images before rendering
+          const patchPromises = [];
+          for (const it of items) {
+            for (const s of (it.strokes || [])) {
+              if (s.isPatch && s.patchDataUrl) {
+                const img = new Image();
+                patchImageCache.set(s.patchDataUrl, img);
+                patchPromises.push(new Promise(r => { img.onload = r; img.onerror = r; img.src = s.patchDataUrl; }));
+              }
+            }
+          }
+
+          // Render after all patches are loaded
+          Promise.all(patchPromises).then(() => {
+            document.body.classList.add('has-images');
+            renderItem();
+            resolve(true);
+          });
+        };
+        req.onerror = () => { db.close(); console.warn('[Persist] IndexedDB read error'); resolve(false); };
+      });
+    }).catch(e => { console.warn('[Persist] IndexedDB open failed:', e); return false; });
+  }
+
+  function loadSettings() {
+    let s;
+    try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY)); } catch {}
+    if (!s) return;
+    if (s.showBoxes      != null) { showBoxes     = s.showBoxes;     showBBBtn.classList.toggle('active', showBoxes); }
+    if (s.showOutlines   != null) { showOutlines  = s.showOutlines;  showOutlineBtn.classList.toggle('active', showOutlines); }
+    if (s.textSizeDelta  != null)   textSizeDelta  = s.textSizeDelta;
+    if (s.lineHeightDelta!= null)   lineHeightDelta= s.lineHeightDelta;
+    if (s.textUppercase  != null) { textUppercase = s.textUppercase; uppercaseBtn.classList.toggle('active', textUppercase); }
+    if (s.textFont       != null) { textFont      = s.textFont;      fontSelect.value = textFont; }
+    if (s.textColor      != null) { textColor     = s.textColor;     textColorPick.value = textColor; }
+    if (s.bgColor        != null) { bgColor       = s.bgColor;       bgColorPick.value   = bgColor; }
+    if (s.bgOpacity      != null)   bgOpacity      = s.bgOpacity;
+    if (s.strokeColor    != null) { strokeColor   = s.strokeColor;   strokeColorPick.value = strokeColor; }
+    if (s.strokeWidth    != null)   strokeWidth    = s.strokeWidth;
+    if (s.autoHideBar   != null) {
+      autoHideBar = s.autoHideBar;
+      autohideBtn.classList.toggle('active', autoHideBar);
+      document.body.classList.toggle('autohide-bar', autoHideBar);
+    }
+    if (s.brushColor     != null) { brushColor    = s.brushColor;    brushColorPick.value = brushColor; }
+    if (s.brushSize      != null) { brushSize     = s.brushSize;     brushSizeSlider.value = brushSize; }
+    if (s.fitToPage      != null) {
+      fitToPage = s.fitToPage;
+      fitBtn.classList.toggle('active', fitToPage);
+      mainArea.classList.toggle('actual-size', !fitToPage);
+    }
+    if (s.viewMode != null) {
+      viewMode = s.viewMode;
+      singleBtn.classList.toggle('radio-active', viewMode === 'single');
+      doubleBtn.classList.toggle('radio-active', viewMode === 'double-comic');
+      mangaBtn.classList.toggle('radio-active',  viewMode === 'double-manga');
+      allBtn.classList.toggle('radio-active',    viewMode === 'all');
+      mainArea.classList.toggle('webtoon-mode',  viewMode === 'all');
+    }
+  }
+
+  function updateControls() {
+    const isAll = viewMode === 'all';
+    const step  = navStep();
+    prevBtn.disabled = isAll || currentIndex < step;
+    nextBtn.disabled = isAll || currentIndex + step >= items.length;
+  }
+</script>
+
+</body>
+</html>
