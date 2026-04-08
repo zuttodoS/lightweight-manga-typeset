@@ -2023,7 +2023,7 @@
 
         // Add inpaint patches as strokes (not replacing image)
         if (!item.strokes) item.strokes = [];
-        for (const p of result.patches) {
+        for (const p of (result.patches || [])) {
           item.strokes.push({ isPatch: true, patchDataUrl: p.dataUrl, x: p.x, y: p.y, w: p.w, h: p.h });
         }
       }

@@ -1,0 +1,33 @@
+# Core ML
+torch
+torchvision
+numpy==1.26.4
+einops
+
+# Image processing
+Pillow
+opencv-python
+scikit-image
+
+# Geometry & graph
+shapely
+pyclipper
+networkx
+
+# Text & language
+py3langid==0.2.2
+regex
+
+# Configuration
+omegaconf
+pydantic>=2.5.0
+
+# Model download & utils
+requests
+tqdm
+colorama
+python-dotenv
+
+# Mask refinement (optional, improves inpainting quality)
+# pydensecrf is hard to build on Windows. Install manually if needed:
+#   pip install pydensecrf@https://github.com/lucasb-eyer/pydensecrf/archive/refs/heads/master.zip
