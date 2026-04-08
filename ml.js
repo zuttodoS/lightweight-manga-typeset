@@ -17,28 +17,23 @@ const ML = (() => {
   let detSession = null, ocrEncSession = null, ocrDecSession = null, inpaintSession = null;
   let dictionary = null;
 
-  async function fetchModel(filename, maxRetries = 3) {
-    const url = 'models/' + filename;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  // Use local models/ if available, fall back to HuggingFace CDN for GitHub Pages deployment
+  const HF = 'https://huggingface.co/noobv2ram/lightweight-manga-typeset/resolve/main/';
+
+  // Fetch model as ArrayBuffer — tries local first, falls back to HuggingFace CDN
+  async function fetchModel(filename) {
+    // Try local
+    try {
+      const resp = await fetch('models/' + filename);
+      if (resp.ok && resp.headers.get('content-type')?.includes('octet-stream') || resp.ok && resp.url.includes(filename)) {
         const buf = await resp.arrayBuffer();
-        // Validate: LFS pointer files are small text, real models are >10KB
-        if (buf.byteLength < 10000) {
-          const text = new TextDecoder().decode(buf.slice(0, 200));
-          if (text.includes('version https://git-lfs.github.com')) {
-            throw new Error('Got Git LFS pointer instead of actual file. Ensure LFS files are downloaded.');
-          }
-        }
-        return buf;
-      } catch (e) {
-        console.warn(`[ML] Fetch ${filename} attempt ${attempt}/${maxRetries} failed:`, e.message);
-        if (attempt === maxRetries) throw new Error(`Failed to load models/${filename} after ${maxRetries} attempts: ${e.message}`);
-        // Wait before retry (exponential backoff)
-        await new Promise(r => setTimeout(r, 1000 * attempt));
+        if (buf.byteLength > 1000) return buf; // valid binary, not an error page
       }
-    }
+    } catch (_) {}
+    // Fall back to HuggingFace
+    const resp = await fetch(HF + filename);
+    if (!resp.ok) throw new Error(`Failed to fetch model ${filename}: ${resp.status}`);
+    return await resp.arrayBuffer();
   }
 
   // ── ONNX fixed input sizes ───────────────────────────────────────────────
