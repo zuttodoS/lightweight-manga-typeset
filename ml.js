@@ -718,7 +718,7 @@ const ML = (() => {
   async function extract(imageSrc, cb) {
     // Step 1: detection  [backend.py line 166-173]
     const { boxes, w, h, rawMask } = await detect(imageSrc, cb);
-    if (!boxes.length) return { bboxes: [], inpaintedSrc: imageSrc };
+    if (!boxes.length) return { bboxes: [], patches: [] };
 
     // Step 2: OCR each textline  [backend.py line 182-185]
     const texts = await recognize(imageSrc, boxes, cb);
