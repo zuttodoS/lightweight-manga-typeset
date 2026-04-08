@@ -1984,13 +1984,18 @@
     }
     ctx.drawImage(off, 0, 0);
 
-    // Draw patches on top
+    // Draw patches on top (use cache for reliable sync drawing)
     for (const s of strokes) {
       if (!s.isPatch || !s.patchDataUrl) continue;
-      const pImg = new Image();
-      pImg.src = s.patchDataUrl;
-      // Synchronous draw works if image is already loaded (data URL)
-      ctx.drawImage(pImg, s.x * sx, s.y * sy, s.w * sx, s.h * sy);
+      let pImg = patchImageCache.get(s.patchDataUrl);
+      if (!pImg) {
+        pImg = new Image();
+        pImg.src = s.patchDataUrl;
+        patchImageCache.set(s.patchDataUrl, pImg);
+      }
+      if (pImg.complete && pImg.naturalWidth) {
+        ctx.drawImage(pImg, s.x * sx, s.y * sy, s.w * sx, s.h * sy);
+      }
     }
   }
 
